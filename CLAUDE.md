@@ -29,9 +29,10 @@ run.sh               # viam-server entrypoint. Creates venv, installs deps, exec
 
 1. `viam-server` runs `run.sh`, which exec's `python -m src.main`.
 2. `Module.run_from_registry()` discovers `AprilTagVisualizer` (registered via the `EasyResource` mixin) and serves it.
-3. On each machine reconfigure event, `validate_config` runs first, then `reconfigure` is invoked with resolved dependencies.
-4. `reconfigure` cancels any prior detect-loop task, clears `_detected`, and starts a fresh `_detect_loop` task.
-5. `close` cancels the detect-loop task on shutdown.
+3. On initial resource creation, the framework calls `new(config, dependencies)`. `EasyResource.new` only constructs the instance — for service models the framework does **not** auto-call `reconfigure`, so our `new` calls it explicitly. See "Notes" below.
+4. On subsequent machine reconfigure events, the framework calls `validate_config` then `reconfigure` directly.
+5. `reconfigure` cancels any prior detect-loop task, clears `_detected`, and starts a fresh `_detect_loop` task.
+6. `close` cancels the detect-loop task on shutdown.
 
 ### Detection loop
 
@@ -67,14 +68,16 @@ This diverges from the pattern used by `pallet-webapp-configure-test/pallet-conf
 
 Each tag's `physical_object` is a flat `RectangularPrism(dims_mm = Vector3(x=tag_width_mm, y=tag_width_mm, z=1.0))` centered at `Pose(o_z=1.0)` (identity orientation in Viam's o-vec representation — note that `Pose()` defaults to all-zeros, which is an invalid orientation vector). The 1mm thickness is arbitrary, picked to be visible without dominating the scene.
 
-## Open verification items
+## Notes from initial bring-up
 
-The following were not verified at scaffold time. If the module fails to start or render, check these in order:
+Verified end-to-end against a RealSense camera at 5 Hz; tags render correctly in the 3D scene.
 
-1. **`EasyResource` + service compatibility.** The mixin pattern is taken from a `PoseTracker` component example; it has not been verified to register a *service* model correctly. If registration fails, drop `EasyResource` and use explicit `resource.Registration` + `Module.add_model_from_registry()` calls in `main.py`.
-2. **`viam-sdk` version pinning.** `requirements.txt` is unpinned. The `viam.services.worldstatestore` package was added relatively recently; older SDK versions will `ImportError` on the proto/base-class imports. If pip resolves an old version, pin to a known-good one (e.g. `viam-sdk>=0.40.0`, subject to verification).
-3. **`asyncio.create_task` inside sync `reconfigure`.** Requires a running loop. The Viam Python SDK should be running one when reconfigure fires, but if it doesn't, this throws `RuntimeError: no running event loop`. Workaround: schedule via `asyncio.get_event_loop().call_soon_threadsafe(...)` or restructure to start the loop lazily on the first `stream_transform_changes` call.
-4. **Geometry center orientation.** `Pose(o_z=1.0)` is used as the geometry-local identity. If tags don't render even though events are firing on the wire, the renderer may be rejecting the geometry — try `Pose(o_z=1.0, theta=0.0)` explicitly or check Viam's docs for the expected default.
+- **`EasyResource.new` does NOT call `reconfigure` for service models.** Default impl is `cls(config.name); return self`. Component models appear to be auto-reconfigured by the framework, services are not. Our `new` therefore calls `instance.reconfigure(config, dependencies)` explicitly. Without this, the resource serves with all config attributes unset and the detect loop never starts. This was the cause of the initial "module loads but does nothing" failure mode.
+- **`validate_config` must return `Tuple[Sequence[str], Sequence[str]]`** (required deps, optional deps) on the current Python SDK. Returning a bare `Sequence[str]` produces a runtime warning `Your validate function validate_config did not return type tuple[Sequence[str], Sequence[str]]` and the second list is treated as empty.
+- **`asyncio.create_task` inside sync `reconfigure` works fine** — the SDK runs reconfigure inside an active event loop.
+- **`Pose(o_z=1.0)` as geometry-local center renders correctly.** No need to set `theta` explicitly.
+- **The 3D scene tab takes a few seconds to subscribe** after the module reconfigures. If `subscriber_count` stays at 0 in `do_command` output, give the renderer time to connect or refresh the page.
+- **`viam-sdk` is intentionally unpinned in `requirements.txt`.** If a future install resolves an SDK predating `viam.services.worldstatestore`, the module will ImportError. Pin if and when this bites.
 
 ## Don't
 
