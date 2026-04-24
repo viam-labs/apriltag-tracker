@@ -1,0 +1,20 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "shrews-testing:apriltag-tracker",
+  "visibility": "public_unlisted",
+  "url": "https://github.com/shrews-testing/apriltag-tracker",
+  "description": "Continuously detects AprilTags and exposes them as world state transforms for the Viam 3D scene viewer.",
+  "models": [
+    {
+      "api": "rdk:service:world_state_store",
+      "model": "shrews-testing:apriltag-tracker:april_tag_visualizer",
+      "short_description": "Continuous AprilTag detector that publishes detected tags as world state transforms.",
+      "markdown_link": "README.md"
+    }
+  ],
+  "entrypoint": "run.sh",
+  "build": {
+    "arch": ["linux/arm64", "linux/amd64"],
+    "build": "make module.tar.gz"
+  }
+}
