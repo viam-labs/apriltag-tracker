@@ -14,7 +14,7 @@
     {
       "api": "rdk:component:camera",
       "model": "shrews-testing:apriltag-tracker:overlay_camera",
-      "short_description": "Camera that wraps another camera and overlays detected AprilTag corner polygons and ids on each frame.",
+      "short_description": "Wraps a camera and draws AprilTag corner polygons and ids on each frame.",
       "markdown_link": "README.md"
     }
   ],
