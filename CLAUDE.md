@@ -62,13 +62,38 @@ Exceptions from `_detect_once` are caught and logged at WARNING; the loop contin
 
 ### UUID strategy
 
-UUIDs are `str(tag_id).encode()`, stable across detections. Movement is communicated via `UPDATED` events, not via REMOVED+ADDED with versioned UUIDs.
+UUIDs are stable across detections; movement is communicated via `UPDATED` events. Each detected tag emits **two** UUIDs per cycle (see "Per-tag transforms" below), so a tag with id `7` adds entries `april_tag_7` and `april_tag_7_origin` to `_detected`.
 
-This diverges from the pattern used by `pallet-webapp-configure-test/pallet-config`, which versions UUIDs (`box-N-v3` -> `box-N-v4`) because the Viam 3D renderer was observed to ignore `ADDED` events for cached UUIDs. The pallet-config workaround predates use of `UPDATED` and may be more conservative than necessary. The expectation here is that `UPDATED` works correctly. **If tags appear in the scene but freeze in their initial pose when they move, this is the first thing to suspect.** The fix is to switch movement to REMOVED+ADDED with a version counter (`Dict[tag_id -> int]`) appended to the UUID.
+This diverges from the pattern used by `pallet-webapp-configure-test/pallet-config`, which versions UUIDs (`box-N-v3` → `box-N-v4`) because the Viam 3D renderer was observed to ignore `ADDED` events for cached UUIDs. The pallet-config workaround predates use of `UPDATED` and may be more conservative than necessary. The expectation here is that `UPDATED` works correctly. **If tags appear in the scene but freeze in their initial pose when they move, this is the first thing to suspect.** The fix is to switch movement to REMOVED+ADDED with a version counter (`Dict[tag_id -> int]`) appended to each UUID.
 
-### Geometry
+### Per-tag transforms
 
-Each tag's `physical_object` is a flat `RectangularPrism(dims_mm = Vector3(x=tag_width_mm, y=tag_width_mm, z=1.0))` centered at `Pose(o_z=1.0)` (identity orientation in Viam's o-vec representation — note that `Pose()` defaults to all-zeros, which is an invalid orientation vector). The 1mm thickness is arbitrary, picked to be visible without dominating the scene.
+`_build_transforms(tag)` returns a list of two `Transform` protos for each detected tag:
+
+1. `april_tag_<id>_origin` — a 1mm marker cube placed at the tag's **bottom-left corner**. Its frame has X right, Y up, Z into the tag. This is what carries the user-visible axes triad.
+2. `april_tag_<id>` — a `tag_width_mm × tag_width_mm × 1mm` box at the **tag center**. This is the geometry that visually represents the tag's printed face.
+
+Two transforms are required because **the 3D scene viewer ignores `Geometry.center`**: the box is always drawn at the frame's `pose_in_observer_frame.pose` regardless of the offset specified inside the geometry. The pallet-config module hits the same constraint and uses the same workaround — set `pose_in_observer_frame.pose` to where the geometry should land and don't bother with `Geometry.center`. To get both a BL-anchored origin marker AND a tag-area geometry from a single detection, the two anchors must live on separate frames, hence two transforms.
+
+#### Pose math
+
+The detector returns `pose_R` (3x3) and `pose_t` (3x1, in meters because we pass `tag_size = 0.001 * tag_width_mm`).
+
+- **dt_apriltags uses Y-down tag-local coordinates** (image-coordinate convention), so the BL corner is at local `(-w/2, +w/2, 0)`, not `(-w/2, -w/2, 0)`. Getting this wrong puts the origin at the top-left.
+- **`t_corner = t + R · (-w/2, +w/2, 0)`** — the BL corner expressed in camera frame.
+- **`R_display = R · Rx180`** where `Rx180 = diag(1, -1, -1)`, rotating 180° around X. With the Y-down apriltag frame this yields a display frame with X right, Y up, Z into the tag (which is what the user requested for "Z away from camera").
+
+Both transforms share the same `R_display` orientation and `pose_in_observer_frame.reference_frame = camera.name`. Only the translation differs (BL corner vs. tag center).
+
+### Overlay camera (`overlay_camera.py`)
+
+A `Camera` component model that wraps a source camera and returns annotated JPEGs. Architecture is much simpler than the visualizer:
+
+- **No background loop.** Detection runs synchronously inside each `get_image` / `get_images` call. Cameras are pulled by clients on demand, so per-call detection is the right model.
+- **Detector instance is built once in `reconfigure`** (`apriltag.Detector(families=...)`) and reused — instantiating per-call would be expensive.
+- **Decode and re-encode via cv2.** Source JPEG bytes → `cv2.imdecode` → grayscale for detection → `cv2.polylines` + `cv2.putText` on the BGR image → `cv2.imencode(".jpg", ...)`. No PIL intermediate.
+- **Non-JPEG images pass through unchanged.** Depth (e.g. `image/vnd.viam.dep`) and other mime types are returned as-is from `get_images()`.
+- **`get_properties` and `get_point_cloud` proxy to the source camera.** This means downstream consumers see the source's intrinsics (important for pose-estimating clients), and depth queries behave normally on cameras that support them.
 
 ## Notes from initial bring-up
 
@@ -78,6 +103,8 @@ Verified end-to-end against a RealSense camera at 5 Hz; tags render correctly in
 - **`validate_config` must return `Tuple[Sequence[str], Sequence[str]]`** (required deps, optional deps) on the current Python SDK. Returning a bare `Sequence[str]` produces a runtime warning `Your validate function validate_config did not return type tuple[Sequence[str], Sequence[str]]` and the second list is treated as empty.
 - **`asyncio.create_task` inside sync `reconfigure` works fine** — the SDK runs reconfigure inside an active event loop.
 - **`Pose(o_z=1.0)` as geometry-local center renders correctly.** No need to set `theta` explicitly.
+- **The 3D scene viewer ignores `Geometry.center`.** The geometry is always drawn at the frame's `pose_in_observer_frame.pose`. Pallet-config hit this too and works around it the same way. If you need a frame origin and a geometry to live at different physical positions, emit two transforms with different reference frames.
+- **dt_apriltags uses Y-down tag-local coordinates.** The BL corner is at `(-w/2, +w/2, 0)` in tag-local space, not `(-w/2, -w/2, 0)`. The Z axis returned by the detector points out of the printed surface toward the camera.
 - **The 3D scene tab takes a few seconds to subscribe** after the module reconfigures. If `subscriber_count` stays at 0 in `do_command` output, give the renderer time to connect or refresh the page.
 - **`viam-sdk` is intentionally unpinned in `requirements.txt`.** If a future install resolves an SDK predating `viam.services.worldstatestore`, the module will ImportError. Pin if and when this bites.
 
