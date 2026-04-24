@@ -216,26 +216,40 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             self._detected = new_state
 
     def _build_transform(self, tag, uuid: bytes) -> Transform:
-        o = quaternion_to_orientation_vector(Rotation.from_matrix(tag.pose_R))
+        w_mm = self.tag_width_mm
+        half_m = w_mm / 2.0 / 1000.0  # meters; pose_t is in meters
+
+        R = tag.pose_R
+        t = tag.pose_t.flatten()
+
+        # Move frame origin from tag center to bottom-left corner.
+        # AprilTag local coords place BL at (-w/2, -w/2, 0).
+        t_corner = t + R @ np.array([-half_m, -half_m, 0.0])
+
+        # Flip Z by rotating 180° around X (keeps X, flips Y and Z).
+        Rx180 = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
+        R_display = R @ Rx180
+
+        o = quaternion_to_orientation_vector(Rotation.from_matrix(R_display))
         pose = Pose(
-            x=tag.pose_t[0][0] * 1000,
-            y=tag.pose_t[1][0] * 1000,
-            z=tag.pose_t[2][0] * 1000,
+            x=t_corner[0] * 1000,
+            y=t_corner[1] * 1000,
+            z=t_corner[2] * 1000,
             o_x=o.o_x,
             o_y=o.o_y,
             o_z=o.o_z,
             theta=o.theta * 180 / math.pi,
         )
+
+        # In the BL-origin, Y-down frame, the tag covers x∈[0,w], y∈[-w,0].
         geometry = Geometry(
-            center=Pose(o_z=1.0),
-            box=RectangularPrism(
-                dims_mm=Vector3(x=self.tag_width_mm, y=self.tag_width_mm, z=1.0)
-            ),
-            label=f"tag-{tag.tag_id}",
+            center=Pose(x=w_mm / 2.0, y=-w_mm / 2.0, z=0.0, o_z=1.0),
+            box=RectangularPrism(dims_mm=Vector3(x=w_mm, y=w_mm, z=1.0)),
+            label=f"april_tag_{tag.tag_id}",
         )
         return Transform(
             uuid=uuid,
-            reference_frame=f"tag-{tag.tag_id}",
+            reference_frame=f"april_tag_{tag.tag_id}",
             pose_in_observer_frame=PoseInFrame(
                 reference_frame=self.camera.name, pose=pose
             ),
