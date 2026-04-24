@@ -4,11 +4,12 @@ A Viam module that continuously detects AprilTags in a camera feed and publishes
 
 > **Note:** The [`viam-labs/apriltag`](https://github.com/viam-labs/apriltag) module is poll-based — it implements the `PoseTracker` component, and clients call `get_poses` to retrieve current detections. This module is continuous: a background loop pushes detection events to the world state store, so tags render in the 3D scene without client-side polling.
 
-## Model
+## Models
 
 | Model | API | Description |
 | ----- | --- | ----------- |
-| `shrews-testing:apriltag-tracker:april_tag_visualizer` | `rdk:service:world_state_store` | Continuous AprilTag detector that publishes each detected tag as a world state transform. |
+| `shrews-testing:apriltag-tracker:april_tag_visualizer` | `rdk:service:world_state_store` | Continuous AprilTag detector that publishes each detected tag as a world state transform for the 3D scene tab. |
+| `shrews-testing:apriltag-tracker:overlay_camera` | `rdk:component:camera` | Camera that wraps another camera and overlays each detected tag's four corners (true rotated/skewed quad) and id on the frame. |
 
 ## Configuration
 
@@ -57,6 +58,26 @@ The module's detection loop runs at `detection_rate_hz` and emits one of three c
 - `REMOVED` — tag id was present in the previous cycle and is no longer detected.
 
 There is no movement threshold and no flicker debouncing: every cycle in which a tag is visible emits an `UPDATED` event, and a single missed frame produces an immediate `REMOVED` followed by `ADDED` when it reappears. If this becomes a problem in practice, see the design notes in `CLAUDE.md` for where to add either knob.
+
+## `overlay_camera` configuration
+
+Add a camera component with the `overlay_camera` model:
+
+```json
+{
+  "camera_name": "camera-1",
+  "tag_family": "tag36h11"
+}
+```
+
+| Name | Type | Inclusion | Description |
+| ---- | ---- | --------- | ----------- |
+| `camera_name` | string | **Required** | Name of the source camera component to wrap. The overlay camera reads JPEG frames from this camera, runs detection, and re-encodes with corners drawn. |
+| `tag_family` | string | **Required** | AprilTag family to detect. Comma-separated values are accepted. |
+
+The wrapper proxies `get_properties` and `get_point_cloud` to the source camera unchanged, and only annotates JPEG-mime images. Non-JPEG images (e.g. depth) pass through untouched.
+
+Detection runs on each `get_image` / `get_images` call rather than from a continuous loop, since cameras are pulled by clients on demand.
 
 ## Generating tags
 

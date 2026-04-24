@@ -4,20 +4,22 @@ Operational context for future agents working on this repo. Read alongside `READ
 
 ## What this is
 
-A Viam module that implements the `rdk:service:world_state_store` API. It runs a continuous AprilTag detection loop against a configured camera and publishes each detected tag as a `Transform` so it renders in the Viam app's 3D scene tab.
+A Viam module that implements two AprilTag-related models:
 
-Single model: `shrews-testing:apriltag-tracker:april_tag_visualizer`.
+- `shrews-testing:apriltag-tracker:april_tag_visualizer` (API `rdk:service:world_state_store`) — runs a continuous AprilTag detection loop against a configured camera and publishes each detected tag as a `Transform` so it renders in the Viam app's 3D scene tab.
+- `shrews-testing:apriltag-tracker:overlay_camera` (API `rdk:component:camera`) — wraps a source camera and returns annotated JPEGs with each detected tag's four corners drawn as a polygon (rotated/skewed to match the actual tag in the image) and id labelled at the tag center. Provides the 2D companion view to the 3D visualizer.
 
 A separate module, [`viam-labs/apriltag`](https://github.com/viam-labs/apriltag), exposes the same detection capability via the `PoseTracker` component — clients poll `get_poses` to retrieve current detections. This module is the continuous-push counterpart: a background loop computes diffs against the previous cycle and broadcasts `ADDED`/`UPDATED`/`REMOVED` events to subscribers.
 
 ## File layout
 
 ```
-src/main.py          # Module entrypoint. Imports the model class so it self-registers, then runs the registry.
-src/visualizer.py    # AprilTagVisualizer — the WorldStateStore implementation.
-src/spatialmath.py   # quaternion -> Viam orientation vector via libviam_rust_utils ctypes (copied verbatim from viam-labs/apriltag).
+src/main.py          # Module entrypoint. Imports model classes so they self-register, then runs the registry.
+src/visualizer.py    # AprilTagVisualizer — the WorldStateStore implementation (3D scene).
+src/overlay_camera.py # OverlayCamera — Camera implementation that returns annotated JPEGs (2D scene).
+src/spatialmath.py   # quaternion -> Viam orientation vector via libviam_rust_utils ctypes.
 libviam_rust_utils-linux_*.so   # Native helpers for the orientation-vector conversion.
-meta.json            # Module metadata. Single model entry under api rdk:service:world_state_store.
+meta.json            # Module metadata. Two model entries.
 requirements.txt     # Python deps. viam-sdk must be a version that exposes viam.services.worldstatestore.
 Makefile             # `make module.tar.gz` packages the module for upload.
 run.sh               # viam-server entrypoint. Creates venv, installs deps, exec's `python -m src.main`.
