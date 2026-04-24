@@ -185,8 +185,8 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
 
         new_state: Dict[bytes, Transform] = {}
         for tag in tags:
-            uuid = str(tag.tag_id).encode()
-            new_state[uuid] = self._build_transform(tag, uuid)
+            for tf in self._build_transforms(tag):
+                new_state[tf.uuid] = tf
 
         async with self._lock:
             old_keys = set(self._detected.keys())
@@ -215,14 +215,19 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 )
             self._detected = new_state
 
-    def _build_transform(self, tag, uuid: bytes) -> Transform:
+    def _build_transforms(self, tag) -> List[Transform]:
+        """Two transforms per tag: a BL-corner origin frame plus a
+        tag-center frame carrying the box geometry. Two transforms are
+        needed because the renderer ignores Geometry.center, so the
+        box is always drawn at the frame's pose — to have both a BL
+        origin marker and a geometry covering the tag area, the two
+        anchors must live on separate frames."""
         w_mm = self.tag_width_mm
         half_m = w_mm / 2.0 / 1000.0  # meters; pose_t is in meters
 
         R = tag.pose_R
         t = tag.pose_t.flatten()
 
-        # Move frame origin from tag center to bottom-left corner.
         # dt_apriltags uses Y-down tag-local coords, so BL is at
         # (-w/2, +w/2, 0) — not (-w/2, -w/2, 0) which is top-left.
         t_corner = t + R @ np.array([-half_m, half_m, 0.0])
@@ -232,9 +237,9 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         # display frame with X right, Y up, Z into the tag.
         Rx180 = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
         R_display = R @ Rx180
-
         o = quaternion_to_orientation_vector(Rotation.from_matrix(R_display))
-        pose = Pose(
+
+        pose_corner = Pose(
             x=t_corner[0] * 1000,
             y=t_corner[1] * 1000,
             z=t_corner[2] * 1000,
@@ -243,21 +248,45 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             o_z=o.o_z,
             theta=o.theta * 180 / math.pi,
         )
+        pose_center = Pose(
+            x=t[0] * 1000,
+            y=t[1] * 1000,
+            z=t[2] * 1000,
+            o_x=o.o_x,
+            o_y=o.o_y,
+            o_z=o.o_z,
+            theta=o.theta * 180 / math.pi,
+        )
 
-        # In the BL-origin display frame, the tag covers x∈[0,w], y∈[0,w].
-        geometry = Geometry(
-            center=Pose(x=w_mm / 2.0, y=w_mm / 2.0, z=0.0, o_z=1.0),
-            box=RectangularPrism(dims_mm=Vector3(x=w_mm, y=w_mm, z=1.0)),
-            label=f"april_tag_{tag.tag_id}",
-        )
-        return Transform(
-            uuid=uuid,
-            reference_frame=f"april_tag_{tag.tag_id}",
+        origin_name = f"april_tag_{tag.tag_id}_origin"
+        box_name = f"april_tag_{tag.tag_id}"
+
+        # Origin marker: tiny 1mm cube at the BL corner so the renderer
+        # has something to draw axes against.
+        origin_tf = Transform(
+            uuid=origin_name.encode(),
+            reference_frame=origin_name,
             pose_in_observer_frame=PoseInFrame(
-                reference_frame=self.camera.name, pose=pose
+                reference_frame=self.camera.name, pose=pose_corner
             ),
-            physical_object=geometry,
+            physical_object=Geometry(
+                box=RectangularPrism(dims_mm=Vector3(x=1.0, y=1.0, z=1.0)),
+                label=origin_name,
+            ),
         )
+        # Tag area: full-size box at the tag center.
+        box_tf = Transform(
+            uuid=box_name.encode(),
+            reference_frame=box_name,
+            pose_in_observer_frame=PoseInFrame(
+                reference_frame=self.camera.name, pose=pose_center
+            ),
+            physical_object=Geometry(
+                box=RectangularPrism(dims_mm=Vector3(x=w_mm, y=w_mm, z=1.0)),
+                label=box_name,
+            ),
+        )
+        return [origin_tf, box_tf]
 
     def _broadcast(self, msg: StreamTransformChangesResponse):
         for q in list(self._subscribers):
