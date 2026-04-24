@@ -223,10 +223,13 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         t = tag.pose_t.flatten()
 
         # Move frame origin from tag center to bottom-left corner.
-        # AprilTag local coords place BL at (-w/2, -w/2, 0).
-        t_corner = t + R @ np.array([-half_m, -half_m, 0.0])
+        # dt_apriltags uses Y-down tag-local coords, so BL is at
+        # (-w/2, +w/2, 0) — not (-w/2, -w/2, 0) which is top-left.
+        t_corner = t + R @ np.array([-half_m, half_m, 0.0])
 
         # Flip Z by rotating 180° around X (keeps X, flips Y and Z).
+        # Combined with the Y-down apriltag convention this yields a
+        # display frame with X right, Y up, Z into the tag.
         Rx180 = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
         R_display = R @ Rx180
 
@@ -241,9 +244,9 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             theta=o.theta * 180 / math.pi,
         )
 
-        # In the BL-origin, Y-down frame, the tag covers x∈[0,w], y∈[-w,0].
+        # In the BL-origin display frame, the tag covers x∈[0,w], y∈[0,w].
         geometry = Geometry(
-            center=Pose(x=w_mm / 2.0, y=-w_mm / 2.0, z=0.0, o_z=1.0),
+            center=Pose(x=w_mm / 2.0, y=w_mm / 2.0, z=0.0, o_z=1.0),
             box=RectangularPrism(dims_mm=Vector3(x=w_mm, y=w_mm, z=1.0)),
             label=f"april_tag_{tag.tag_id}",
         )
