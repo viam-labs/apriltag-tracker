@@ -1,6 +1,7 @@
 import asyncio
 import math
-from typing import Any, AsyncGenerator, ClassVar, Dict, List, Mapping, Optional, Sequence, cast
+import time
+from typing import Any, AsyncGenerator, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple, cast
 
 import cv2
 import dt_apriltags as apriltag
@@ -55,6 +56,15 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         self._detected: Dict[bytes, Transform] = {}
         self._subscribers: List[asyncio.Queue] = []
         self._loop_task: Optional[asyncio.Task] = None
+        # Debug state — exposed via do_command.
+        self._loop_started_at: Optional[float] = None
+        self._cycles_completed: int = 0
+        self._last_cycle_at: Optional[float] = None
+        self._last_cycle_error: Optional[str] = None
+        self._last_intrinsics: List[float] = []
+        self._last_image_mime_types: List[str] = []
+        self._last_gray_shape: Optional[Tuple[int, int]] = None
+        self._last_tag_ids: List[int] = []
 
     @classmethod
     def new(
@@ -63,7 +73,9 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         return super().new(config, dependencies)
 
     @classmethod
-    def validate_config(cls, config: ComponentConfig) -> Sequence[str]:
+    def validate_config(
+        cls, config: ComponentConfig
+    ) -> Tuple[Sequence[str], Sequence[str]]:
         attrs = struct_to_dict(config.attributes)
         cam = attrs.get(CAMERA_ATTR)
         if cam is None:
@@ -75,7 +87,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         rate = attrs.get(RATE_ATTR, DEFAULT_RATE_HZ)
         if float(rate) <= 0:
             raise Exception(f"{RATE_ATTR} must be > 0.")
-        return [str(cam)]
+        return [str(cam)], []
 
     def reconfigure(
         self,
@@ -94,6 +106,12 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         if self._loop_task is not None:
             self._loop_task.cancel()
         self._detected = {}
+        self._cycles_completed = 0
+        self._last_cycle_error = None
+        LOGGER.info(
+            f"reconfigure: camera={self.camera.name} family={self.tag_family} "
+            f"tag_width_mm={self.tag_width_mm} rate_hz={self.detection_rate_hz}"
+        )
         self._loop_task = asyncio.create_task(self._detect_loop())
 
     async def close(self):
@@ -105,15 +123,23 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 pass
 
     async def _detect_loop(self):
+        self._loop_started_at = time.time()
         period = 1.0 / self.detection_rate_hz
-        detector = apriltag.Detector(families=self.tag_family)
+        try:
+            detector = apriltag.Detector(families=self.tag_family)
+        except Exception as e:
+            self._last_cycle_error = f"detector init failed: {type(e).__name__}: {e}"
+            LOGGER.error(self._last_cycle_error)
+            raise
+        LOGGER.info(f"detection loop started at {self.detection_rate_hz} Hz")
         while True:
             try:
                 await self._detect_once(detector)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                LOGGER.warning(f"detection cycle failed: {e}")
+                self._last_cycle_error = f"{type(e).__name__}: {e}"
+                LOGGER.warning(f"detection cycle failed: {self._last_cycle_error}")
             await asyncio.sleep(period)
 
     async def _detect_once(self, detector):
@@ -124,7 +150,10 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             properties.intrinsic_parameters.center_x_px,
             properties.intrinsic_parameters.center_y_px,
         ]
+        self._last_intrinsics = list(intrinsics)
+
         cam_images = await self.camera.get_images()
+        self._last_image_mime_types = [img.mime_type for img in cam_images[0]]
         gray = None
         for image in cam_images[0]:
             if image.mime_type == CameraMimeType.JPEG:
@@ -133,7 +162,12 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 )
                 break
         if gray is None:
+            self._last_gray_shape = None
+            self._last_cycle_error = (
+                f"no JPEG image found; mime types: {self._last_image_mime_types}"
+            )
             return
+        self._last_gray_shape = (gray.shape[0], gray.shape[1])
 
         tags = detector.detect(
             gray,
@@ -141,6 +175,11 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             camera_params=intrinsics,
             tag_size=0.001 * self.tag_width_mm,
         )
+        self._last_tag_ids = [int(t.tag_id) for t in tags]
+        self._last_cycle_at = time.time()
+        self._cycles_completed += 1
+        # Clear last error on a successful cycle.
+        self._last_cycle_error = None
 
         new_state: Dict[bytes, Transform] = {}
         for tag in tags:
@@ -261,4 +300,34 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         timeout: Optional[float] = None,
         **kwargs,
     ) -> Mapping[str, ValueTypes]:
-        raise NotImplementedError()
+        loop_running = self._loop_task is not None and not self._loop_task.done()
+        loop_exception = None
+        if self._loop_task is not None and self._loop_task.done():
+            try:
+                exc = self._loop_task.exception()
+                if exc is not None:
+                    loop_exception = f"{type(exc).__name__}: {exc}"
+            except (asyncio.CancelledError, asyncio.InvalidStateError):
+                pass
+
+        return {
+            "loop_running": loop_running,
+            "loop_started_at": self._loop_started_at,
+            "loop_exception": loop_exception,
+            "cycles_completed": self._cycles_completed,
+            "last_cycle_at": self._last_cycle_at,
+            "last_cycle_error": self._last_cycle_error,
+            "last_intrinsics": self._last_intrinsics,
+            "last_image_mime_types": self._last_image_mime_types,
+            "last_gray_shape": list(self._last_gray_shape) if self._last_gray_shape else None,
+            "last_tag_ids": self._last_tag_ids,
+            "current_tracked_count": len(self._detected),
+            "current_tracked_uuids": [u.decode() for u in self._detected.keys()],
+            "subscriber_count": len(self._subscribers),
+            "config": {
+                "camera_name": self.camera.name if getattr(self, "camera", None) else None,
+                "tag_family": getattr(self, "tag_family", None),
+                "tag_width_mm": getattr(self, "tag_width_mm", None),
+                "detection_rate_hz": getattr(self, "detection_rate_hz", None),
+            },
+        }
