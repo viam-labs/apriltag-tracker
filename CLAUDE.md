@@ -34,6 +34,23 @@ tests/               # pytest suite for visualizer.py — exercises pose math, c
 
 The detection loop, RealSense communication, and renderer behavior are intentionally out of scope — those need integration testing against real hardware. The unit tests cover the deterministic, computable parts: BL corner math, Rx180 display rotation, sensor-offset application, opacity metadata wiring, UUID/label naming, validate_config, and the do_command dispatch table. **Tests must run from the repo root** because `spatialmath.py` loads `libviam_rust_utils-linux_<arch>.so` via a relative path; running pytest from `tests/` will fail to import.
 
+## Releasing
+
+The current published-on-registry version is recorded in the `VERSION` file at the repo root (one line, bare semver, no `v` prefix). The Makefile's `upload` target reads it:
+
+```sh
+make upload
+```
+
+…which runs `make test`, builds `module.tar.gz`, then pushes via `viam module upload --version=$(cat VERSION) --platform=linux/any`. Tests are a hard dependency on the upload target — if any of the 33 unit tests fail the upload won't run. **Never push the module without running the tests** — the registry rejects duplicate version uploads, so a bad push then needs both a code fix and a version bump to recover.
+
+Workflow for a release:
+
+1. Edit `VERSION` to the new semver (registry rejects duplicates, so always bump).
+2. Commit the `VERSION` change and any code/doc changes together.
+3. `make upload`.
+4. `git push` the commit so the source repo reflects the published version.
+
 ## Architecture
 
 ### Lifecycle
