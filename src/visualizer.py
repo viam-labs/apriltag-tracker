@@ -64,6 +64,10 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         self._last_intrinsics: List[float] = []
         self._last_distortion_model: Optional[str] = None
         self._last_distortion_params: List[float] = []
+        # Color-sensor origin offset in the camera's reference frame (mm).
+        # RealSense reports color-stream intrinsics but treats the depth
+        # left imager as the camera frame origin; this offset compensates.
+        self._sensor_offset_mm: Tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._last_image_mime_types: List[str] = []
         self._last_gray_shape: Optional[Tuple[int, int]] = None
         self._last_tag_ids: List[int] = []
@@ -157,6 +161,11 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         self._last_intrinsics = list(intrinsics)
         self._last_distortion_model = properties.distortion_parameters.model
         self._last_distortion_params = list(properties.distortion_parameters.parameters)
+        self._sensor_offset_mm = (
+            properties.extrinsic_parameters.translation.x,
+            properties.extrinsic_parameters.translation.y,
+            properties.extrinsic_parameters.translation.z,
+        )
 
         cam_images = await self.camera.get_images()
         self._last_image_mime_types = [img.mime_type for img in cam_images[0]]
@@ -243,19 +252,23 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         R_display = R @ Rx180
         o = quaternion_to_orientation_vector(Rotation.from_matrix(R_display))
 
+        # Translate from the reported intrinsics' sensor frame (color)
+        # into the camera's reference frame (depth left imager).
+        ox, oy, oz = self._sensor_offset_mm
+
         pose_corner = Pose(
-            x=t_corner[0] * 1000,
-            y=t_corner[1] * 1000,
-            z=t_corner[2] * 1000,
+            x=t_corner[0] * 1000 + ox,
+            y=t_corner[1] * 1000 + oy,
+            z=t_corner[2] * 1000 + oz,
             o_x=o.o_x,
             o_y=o.o_y,
             o_z=o.o_z,
             theta=o.theta * 180 / math.pi,
         )
         pose_center = Pose(
-            x=t[0] * 1000,
-            y=t[1] * 1000,
-            z=t[2] * 1000,
+            x=t[0] * 1000 + ox,
+            y=t[1] * 1000 + oy,
+            z=t[2] * 1000 + oz,
             o_x=o.o_x,
             o_y=o.o_y,
             o_z=o.o_z,
@@ -372,6 +385,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             "last_intrinsics": self._last_intrinsics,
             "last_distortion_model": self._last_distortion_model,
             "last_distortion_params": self._last_distortion_params,
+            "sensor_offset_mm": list(self._sensor_offset_mm),
             "last_image_mime_types": self._last_image_mime_types,
             "last_gray_shape": list(self._last_gray_shape) if self._last_gray_shape else None,
             "last_tag_ids": self._last_tag_ids,
