@@ -278,8 +278,9 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         origin_name = f"april_tag_{tag.tag_id}_origin"
         box_name = f"april_tag_{tag.tag_id}"
 
-        # Origin marker: tiny 1mm cube at the BL corner so the renderer
-        # has something to draw axes against.
+        # Origin marker: 10mm cube at the BL corner so the renderer has
+        # something visible to draw axes against. 1mm fell below the
+        # renderer's "annotate this frame" size threshold.
         origin_tf = Transform(
             uuid=origin_name.encode(),
             reference_frame=origin_name,
@@ -287,7 +288,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 reference_frame=self.camera.name, pose=pose_corner
             ),
             physical_object=Geometry(
-                box=RectangularPrism(dims_mm=Vector3(x=1.0, y=1.0, z=1.0)),
+                box=RectangularPrism(dims_mm=Vector3(x=10.0, y=10.0, z=10.0)),
                 label=origin_name,
             ),
         )
