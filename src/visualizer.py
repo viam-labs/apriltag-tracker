@@ -68,10 +68,6 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         # RealSense reports color-stream intrinsics but treats the depth
         # left imager as the camera frame origin; this offset compensates.
         self._sensor_offset_mm: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-        # Monotonic counter appended to UUIDs each cycle so the 3D scene
-        # renderer treats each emit as a fresh ADDED rather than caching
-        # by UUID and ignoring movement. Same workaround pallet-config uses.
-        self._version: int = 0
         self._last_image_mime_types: List[str] = []
         self._last_gray_shape: Optional[Tuple[int, int]] = None
         self._last_tag_ids: List[int] = []
@@ -200,51 +196,39 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         # Clear last error on a successful cycle.
         self._last_cycle_error = None
 
-        self._version += 1
         new_state: Dict[bytes, Transform] = {}
         for tag in tags:
-            for tf in self._build_transforms(tag, self._version):
+            for tf in self._build_transforms(tag):
                 new_state[tf.uuid] = tf
 
         async with self._lock:
-            old_keys = set(self._detected.keys())
-            new_keys = set(new_state.keys())
-
-            for k in new_keys - old_keys:
-                self._broadcast(
-                    StreamTransformChangesResponse(
-                        change_type=TransformChangeType.TRANSFORM_CHANGE_TYPE_ADDED,
-                        transform=new_state[k],
-                    )
-                )
-            for k in new_keys & old_keys:
-                self._broadcast(
-                    StreamTransformChangesResponse(
-                        change_type=TransformChangeType.TRANSFORM_CHANGE_TYPE_UPDATED,
-                        transform=new_state[k],
-                    )
-                )
-            for k in old_keys - new_keys:
+            # The 3D scene renderer doesn't redraw on UPDATED events for
+            # cached UUIDs, so we tear everything down and re-add. REMOVED
+            # for the previous cycle's entries comes first to clear the
+            # renderer's cache, then ADDED for the new cycle.
+            for t in self._detected.values():
                 self._broadcast(
                     StreamTransformChangesResponse(
                         change_type=TransformChangeType.TRANSFORM_CHANGE_TYPE_REMOVED,
-                        transform=self._detected[k],
+                        transform=t,
+                    )
+                )
+            for t in new_state.values():
+                self._broadcast(
+                    StreamTransformChangesResponse(
+                        change_type=TransformChangeType.TRANSFORM_CHANGE_TYPE_ADDED,
+                        transform=t,
                     )
                 )
             self._detected = new_state
 
-    def _build_transforms(self, tag, version: int) -> List[Transform]:
+    def _build_transforms(self, tag) -> List[Transform]:
         """Two transforms per tag: a BL-corner origin frame plus a
         tag-center frame carrying the box geometry. Two transforms are
         needed because the renderer ignores Geometry.center, so the
         box is always drawn at the frame's pose — to have both a BL
         origin marker and a geometry covering the tag area, the two
-        anchors must live on separate frames.
-
-        UUIDs include a per-cycle version suffix so the 3D scene
-        renderer (which caches by UUID and ignores ADDED for cached
-        UUIDs) treats each cycle's emit as fresh. The visual `label`
-        stays unversioned for human readability."""
+        anchors must live on separate frames."""
         w_mm = self.tag_width_mm
         half_m = w_mm / 2.0 / 1000.0  # meters; pose_t is in meters
 
@@ -285,35 +269,33 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             theta=o.theta * 180 / math.pi,
         )
 
-        origin_label = f"april_tag_{tag.tag_id}_origin"
-        box_label = f"april_tag_{tag.tag_id}"
-        origin_uuid = f"{origin_label}_v{version}"
-        box_uuid = f"{box_label}_v{version}"
+        origin_name = f"april_tag_{tag.tag_id}_origin"
+        box_name = f"april_tag_{tag.tag_id}"
 
         # Origin marker: 10mm cube at the BL corner so the renderer has
         # something visible to draw axes against. 1mm fell below the
         # renderer's "annotate this frame" size threshold.
         origin_tf = Transform(
-            uuid=origin_uuid.encode(),
-            reference_frame=origin_uuid,
+            uuid=origin_name.encode(),
+            reference_frame=origin_name,
             pose_in_observer_frame=PoseInFrame(
                 reference_frame=self.camera.name, pose=pose_corner
             ),
             physical_object=Geometry(
                 box=RectangularPrism(dims_mm=Vector3(x=10.0, y=10.0, z=10.0)),
-                label=origin_label,
+                label=origin_name,
             ),
         )
         # Tag area: full-size box at the tag center.
         box_tf = Transform(
-            uuid=box_uuid.encode(),
-            reference_frame=box_uuid,
+            uuid=box_name.encode(),
+            reference_frame=box_name,
             pose_in_observer_frame=PoseInFrame(
                 reference_frame=self.camera.name, pose=pose_center
             ),
             physical_object=Geometry(
                 box=RectangularPrism(dims_mm=Vector3(x=w_mm, y=w_mm, z=1.0)),
-                label=box_label,
+                label=box_name,
             ),
         )
         return [origin_tf, box_tf]
