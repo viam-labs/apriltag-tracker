@@ -9,7 +9,7 @@ A Viam module that implements two AprilTag-related models:
 - `shrews-testing:apriltag-tracker:april_tag_visualizer` (API `rdk:service:world_state_store`) — runs a continuous AprilTag detection loop against a configured camera and publishes each detected tag as a `Transform` so it renders in the Viam app's 3D scene tab.
 - `shrews-testing:apriltag-tracker:overlay_camera` (API `rdk:component:camera`) — wraps a source camera and returns annotated JPEGs with each detected tag's four corners drawn as a polygon (rotated/skewed to match the actual tag in the image) and id labelled at the tag center. Provides the 2D companion view to the 3D visualizer.
 
-A separate module, [`viam-labs/apriltag`](https://github.com/viam-labs/apriltag), exposes the same detection capability via the `PoseTracker` component — clients poll `get_poses` to retrieve current detections. This module is the continuous-push counterpart: a background loop computes diffs against the previous cycle and broadcasts `ADDED`/`UPDATED`/`REMOVED` events to subscribers.
+A separate module, [`viam-labs/apriltag`](https://github.com/viam-labs/apriltag), exposes the same detection capability via the `PoseTracker` component — clients poll `get_poses` to retrieve current detections. This module is the continuous-push counterpart: a background loop emits `REMOVED` for every UUID from the previous cycle plus `ADDED` for every UUID in the new cycle, so subscribers see a fresh state each tick.
 
 ## File layout
 
@@ -44,7 +44,7 @@ run.sh               # viam-server entrypoint. Creates venv, installs deps, exec
 2. Pulls a frame from `camera.get_images()`, picks the first JPEG, converts to grayscale via PIL + `cv2.cvtColor`.
 3. Runs `dt_apriltags.Detector.detect(...)` with `estimate_tag_pose=True` and `tag_size = 0.001 * tag_width_mm` (the apriltag library expects meters).
 4. Builds a `Transform` for each tag.
-5. Diffs `new_state` against `self._detected` under `_lock` and broadcasts `ADDED`/`UPDATED`/`REMOVED` events to all subscriber queues.
+5. Under `_lock`: stamps `self._cycle_ts` with the current epoch ms, broadcasts a `REMOVED` event for every UUID in the previous cycle, then an `ADDED` event for every UUID in the new cycle. No `UPDATED` events — see "UUID strategy" below.
 6. Replaces `self._detected` with `new_state`.
 
 Exceptions from `_detect_once` are caught and logged at WARNING; the loop continues. `asyncio.CancelledError` propagates so `close` can shut the loop down cleanly.
@@ -62,18 +62,20 @@ Exceptions from `_detect_once` are caught and logged at WARNING; the loop contin
 
 ### UUID strategy
 
-UUIDs are stable across detections; movement is communicated via `UPDATED` events. Each detected tag emits **two** UUIDs per cycle (see "Per-tag transforms" below), so a tag with id `7` adds entries `april_tag_7` and `april_tag_7_origin` to `_detected`.
+UUIDs are **not** stable across detections. Each cycle stamps every emitted transform with the current epoch milliseconds (`self._cycle_ts`), producing UUIDs like `april_tag_21_centroid_1777324893012`. The diff is intentionally not a real diff — every cycle, we `REMOVED` everything in the previous state and `ADDED` everything in the new state.
 
-This diverges from the pattern used by `pallet-webapp-configure-test/pallet-config`, which versions UUIDs (`box-N-v3` → `box-N-v4`) because the Viam 3D renderer was observed to ignore `ADDED` events for cached UUIDs. The pallet-config workaround predates use of `UPDATED` and may be more conservative than necessary. The expectation here is that `UPDATED` works correctly. **If tags appear in the scene but freeze in their initial pose when they move, this is the first thing to suspect.** The fix is to switch movement to REMOVED+ADDED with a version counter (`Dict[tag_id -> int]`) appended to each UUID.
+This is the same workaround pallet-config uses, and it's required: the 3D scene renderer caches by UUID and drops `ADDED` for any UUID it has *ever* seen, even after a `REMOVED` in the same cycle. Confirmed empirically — we tried `UPDATED` (geometries froze), tried REMOVED+ADDED with stable UUIDs (geometries vanished after first cycle), and the only thing that produces real-time motion in the renderer is fresh UUIDs each cycle.
+
+The visible **labels** stay unsuffixed (`april_tag_21_centroid`, `april_tag_21_origin`) so the displayed name in the 3D scene UI doesn't churn. Only the UUID and `reference_frame` carry the timestamp — the renderer keys on UUID, the user reads the label.
 
 ### Per-tag transforms
 
-`_build_transforms(tag)` returns a list of two `Transform` protos for each detected tag:
+`_build_transforms(tag, ts_ms)` returns a list of two `Transform` protos for each detected tag, both timestamp-suffixed for the cycle:
 
-1. `april_tag_<id>_origin` — a 1mm marker cube placed at the tag's **bottom-left corner**. Its frame has X right, Y up, Z into the tag. This is what carries the user-visible axes triad.
-2. `april_tag_<id>` — a `tag_width_mm × tag_width_mm × 1mm` box at the **tag center**. This is the geometry that visually represents the tag's printed face.
+1. **Origin marker** — UUID `april_tag_<id>_origin_<ts_ms>`, label `april_tag_<id>_origin`. A 10 mm cube placed at the tag's **bottom-left corner**. Its frame has X right, Y up, Z into the tag. Carries the user-visible axes triad. The cube is large enough that the renderer draws axes against it; 1 mm fell below the renderer's annotate-this-frame size threshold.
+2. **Centroid** — UUID `april_tag_<id>_centroid_<ts_ms>`, label `april_tag_<id>_centroid`. A `tag_width_mm × tag_width_mm × 1 mm` box at the **tag center**, covering the printed face.
 
-Two transforms are required because **the 3D scene viewer ignores `Geometry.center`**: the box is always drawn at the frame's `pose_in_observer_frame.pose` regardless of the offset specified inside the geometry. The pallet-config module hits the same constraint and uses the same workaround — set `pose_in_observer_frame.pose` to where the geometry should land and don't bother with `Geometry.center`. To get both a BL-anchored origin marker AND a tag-area geometry from a single detection, the two anchors must live on separate frames, hence two transforms.
+Two transforms are required because **the 3D scene viewer ignores `Geometry.center`**: the box is always drawn at the frame's `pose_in_observer_frame.pose` regardless of any offset specified inside the geometry. Pallet-config hits the same constraint and uses the same workaround — set `pose_in_observer_frame.pose` to where the geometry should land and don't bother with `Geometry.center`. To get both a BL-anchored origin marker AND a tag-area geometry from a single detection, the two anchors must live on separate frames.
 
 #### Pose math
 
@@ -81,9 +83,22 @@ The detector returns `pose_R` (3x3) and `pose_t` (3x1, in meters because we pass
 
 - **dt_apriltags uses Y-down tag-local coordinates** (image-coordinate convention), so the BL corner is at local `(-w/2, +w/2, 0)`, not `(-w/2, -w/2, 0)`. Getting this wrong puts the origin at the top-left.
 - **`t_corner = t + R · (-w/2, +w/2, 0)`** — the BL corner expressed in camera frame.
-- **`R_display = R · Rx180`** where `Rx180 = diag(1, -1, -1)`, rotating 180° around X. With the Y-down apriltag frame this yields a display frame with X right, Y up, Z into the tag (which is what the user requested for "Z away from camera").
+- **`R_display = R · Rx180`** where `Rx180 = diag(1, -1, -1)`, rotating 180° around X. With the Y-down apriltag frame this yields a display frame with X right, Y up, Z into the tag.
+- **`self._sensor_offset_mm`** (read from `properties.extrinsic_parameters.translation` each cycle) is added to both translations after multiplying by 1000 to convert meters → mm. This shifts the pose from the reported intrinsics' sensor frame (e.g. RealSense color sensor) into the camera's actual reference frame (e.g. RealSense depth left imager). For cameras with no extrinsic_parameters set the offset is zero.
 
 Both transforms share the same `R_display` orientation and `pose_in_observer_frame.reference_frame = camera.name`. Only the translation differs (BL corner vs. tag center).
+
+### `do_command` query interface
+
+Dispatches on a `"command"` field in the input. Used by other modules / SDK clients that want a clean read of detection state without subscribing to `stream_transform_changes`:
+
+- `list_tags` → `{tags: [int], timestamp_ms}` — sorted unique tag ids currently detected.
+- `list_uuids` → `{uuids: [str], timestamp_ms}` — current UUIDs (with timestamp suffixes).
+- `get_pose` with `tag_id: int` → `{tag_id, pose: {x,y,z,o_x,o_y,o_z,theta} or null, observer_frame, timestamp_ms}` — looks up the centroid pose for the tag id.
+- `get_transforms` → `{transforms: [{uuid, label, observer_frame, pose}], timestamp_ms}` — full snapshot.
+- No `command` key → debug snapshot (loop liveness, last cycle timing, intrinsics, distortion params, sensor_offset_mm, mime types, current uuids, configured attributes).
+
+Lookup helpers: `_tag_ids_from_detected` parses tag ids from the unsuffixed labels; `_pose_to_dict` flattens a `Pose` proto into a JSON-friendly dict. Both at module scope in `visualizer.py`.
 
 ### Overlay camera (`overlay_camera.py`)
 
@@ -104,7 +119,10 @@ Verified end-to-end against a RealSense camera at 5 Hz; tags render correctly in
 - **`asyncio.create_task` inside sync `reconfigure` works fine** — the SDK runs reconfigure inside an active event loop.
 - **`Pose(o_z=1.0)` as geometry-local center renders correctly.** No need to set `theta` explicitly.
 - **The 3D scene viewer ignores `Geometry.center`.** The geometry is always drawn at the frame's `pose_in_observer_frame.pose`. Pallet-config hit this too and works around it the same way. If you need a frame origin and a geometry to live at different physical positions, emit two transforms with different reference frames.
+- **The renderer caches UUIDs across REMOVED.** Even when we emit `REMOVED(uuid)` immediately followed by `ADDED(uuid)`, the renderer drops the second event and the geometry vanishes. The only fix that produces real-time motion is fresh UUIDs every cycle (we use an epoch-ms suffix). Confirmed by walking through three approaches: stable UUIDs + UPDATED (frozen geometries), stable UUIDs + REMOVED+ADDED (geometries disappear after first cycle), versioned UUIDs (works). Pallet-config arrived at the same conclusion.
 - **dt_apriltags uses Y-down tag-local coordinates.** The BL corner is at `(-w/2, +w/2, 0)` in tag-local space, not `(-w/2, -w/2, 0)`. The Z axis returned by the detector points out of the printed surface toward the camera.
+- **RealSense reports color intrinsics with depth-as-origin convention.** `viam-camera-realsense` returns the *color* stream's intrinsics (`fx`, `fy`, `ppx`, `ppy`) when `main_sensor` is color, but the camera's frame origin is the depth left imager — see [realsense.hpp](https://github.com/viamrobotics/viam-camera-realsense/blob/main/src/module/realsense.hpp). Pose estimation done with the color intrinsics returns positions in the *color sensor frame*, which is offset ~15 mm in X from the depth imager. The realsense module helpfully populates `extrinsic_parameters.translation` (in mm) with the color→depth offset; we read it each cycle and add it to every emitted tag pose. Auto-no-op for cameras that don't populate the field.
+- **RealSense distortion is currently zero.** D-series factory units ship without per-device distortion calibration on the color stream — `Coeffs: [0, 0, 0, 0, 0]`. The realsense module also has distortion publishing commented out (RSDK-12408, unblocked by RDK#5569 as of Dec 2025 but not yet re-enabled in the realsense module). We expose `last_distortion_model` / `last_distortion_params` via `do_command` for diagnosis; once the module re-enables publishing we could wire `cv2.undistort` into the detect loop, but on tested D435/D435i units the coefficients are zeros and there'd be nothing to correct.
 - **The 3D scene tab takes a few seconds to subscribe** after the module reconfigures. If `subscriber_count` stays at 0 in `do_command` output, give the renderer time to connect or refresh the page.
 - **`viam-sdk` is intentionally unpinned in `requirements.txt`.** If a future install resolves an SDK predating `viam.services.worldstatestore`, the module will ImportError. Pin if and when this bites.
 
