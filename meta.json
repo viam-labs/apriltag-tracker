@@ -3,7 +3,7 @@
   "module_id": "shrews-testing:apriltag-tracker",
   "visibility": "public",
   "url": "https://github.com/viam-labs/apriltag-tracker",
-  "description": "Continuously detects AprilTags and exposes them as world state transforms for the Viam 3D scene viewer.",
+  "description": "Continuously detects AprilTags and exposes them via two complementary models. april_tag_visualizer (rdk:service:world_state_store) publishes detected tags as transforms for the Viam 3D scene tab; configurable via camera_name, tag_family, tag_width_mm, detection_rate_hz, centroid_alpha, and motion_service_name. The visualizer's do_command supports list_tags, list_uuids, get_pose (returns origin and centroid in camera and world frames), and get_transforms. overlay_camera (rdk:component:camera) wraps a source camera and returns annotated JPEG frames with detected tag corners drawn for the CONTROL tab; configurable via camera_name and tag_family. Source and full docs: https://github.com/viam-labs/apriltag-tracker",
   "models": [
     {
       "api": "rdk:service:world_state_store",
