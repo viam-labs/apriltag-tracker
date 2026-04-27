@@ -38,6 +38,18 @@ from .spatialmath import quaternion_to_orientation_vector
 
 LOGGER = getLogger(__name__)
 
+
+def _pose_to_dict(pose: Pose) -> Mapping[str, float]:
+    return {
+        "x": pose.x,
+        "y": pose.y,
+        "z": pose.z,
+        "o_x": pose.o_x,
+        "o_y": pose.o_y,
+        "o_z": pose.o_z,
+        "theta": pose.theta,
+    }
+
 CAMERA_ATTR = "camera_name"
 FAMILY_ATTR = "tag_family"
 WIDTH_ATTR = "tag_width_mm"
@@ -68,12 +80,14 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         # RealSense reports color-stream intrinsics but treats the depth
         # left imager as the camera frame origin; this offset compensates.
         self._sensor_offset_mm: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-        # Monotonic counter appended to UUIDs each cycle. The 3D scene
-        # renderer caches by UUID and drops ADDED for any UUID it has
-        # ever seen — even after a REMOVED — so per-cycle versioning is
-        # required to make geometries track motion. Same workaround
-        # pallet-config uses.
-        self._version: int = 0
+        # Unix epoch milliseconds appended to UUIDs each cycle. The 3D
+        # scene renderer caches by UUID and drops ADDED for any UUID it
+        # has ever seen — even after a REMOVED — so per-cycle UUID
+        # uniqueness is required to make geometries track motion.
+        # Milliseconds are short enough to keep UUIDs readable and
+        # fine-grained enough that no two cycles collide at any
+        # reasonable detection rate.
+        self._cycle_ts: int = 0
         self._last_image_mime_types: List[str] = []
         self._last_gray_shape: Optional[Tuple[int, int]] = None
         self._last_tag_ids: List[int] = []
@@ -202,10 +216,10 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         # Clear last error on a successful cycle.
         self._last_cycle_error = None
 
-        self._version += 1
+        self._cycle_ts = int(time.time() * 1000)
         new_state: Dict[bytes, Transform] = {}
         for tag in tags:
-            for tf in self._build_transforms(tag, self._version):
+            for tf in self._build_transforms(tag, self._cycle_ts):
                 new_state[tf.uuid] = tf
 
         async with self._lock:
@@ -229,7 +243,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 )
             self._detected = new_state
 
-    def _build_transforms(self, tag, version: int) -> List[Transform]:
+    def _build_transforms(self, tag, ts_ms: int) -> List[Transform]:
         """Two transforms per tag: a BL-corner origin frame plus a
         tag-center frame carrying the box geometry. Two transforms are
         needed because the renderer ignores Geometry.center, so the
@@ -237,9 +251,9 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         origin marker and a geometry covering the tag area, the two
         anchors must live on separate frames.
 
-        UUIDs include a per-cycle version suffix so the renderer
-        treats each cycle's emit as fresh. The visual `label` stays
-        unversioned for human readability."""
+        UUIDs include a per-cycle epoch-ms timestamp suffix so the
+        renderer treats each cycle's emit as fresh. The visual `label`
+        stays unsuffixed for human readability."""
         w_mm = self.tag_width_mm
         half_m = w_mm / 2.0 / 1000.0  # meters; pose_t is in meters
 
@@ -281,9 +295,9 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         )
 
         origin_label = f"april_tag_{tag.tag_id}_origin"
-        box_label = f"april_tag_{tag.tag_id}"
-        origin_uuid = f"{origin_label}_v{version}"
-        box_uuid = f"{box_label}_v{version}"
+        centroid_label = f"april_tag_{tag.tag_id}_centroid"
+        origin_uuid = f"{origin_label}_{ts_ms}"
+        centroid_uuid = f"{centroid_label}_{ts_ms}"
 
         # Origin marker: 10mm cube at the BL corner so the renderer has
         # something visible to draw axes against. 1mm fell below the
@@ -299,19 +313,19 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 label=origin_label,
             ),
         )
-        # Tag area: full-size box at the tag center.
-        box_tf = Transform(
-            uuid=box_uuid.encode(),
-            reference_frame=box_uuid,
+        # Centroid: full-size box at the tag center.
+        centroid_tf = Transform(
+            uuid=centroid_uuid.encode(),
+            reference_frame=centroid_uuid,
             pose_in_observer_frame=PoseInFrame(
                 reference_frame=self.camera.name, pose=pose_center
             ),
             physical_object=Geometry(
                 box=RectangularPrism(dims_mm=Vector3(x=w_mm, y=w_mm, z=1.0)),
-                label=box_label,
+                label=centroid_label,
             ),
         )
-        return [origin_tf, box_tf]
+        return [origin_tf, centroid_tf]
 
     def _broadcast(self, msg: StreamTransformChangesResponse):
         for q in list(self._subscribers):
@@ -373,6 +387,55 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         timeout: Optional[float] = None,
         **kwargs,
     ) -> Mapping[str, ValueTypes]:
+        cmd = command.get("command") if command else None
+
+        if cmd == "list_tags":
+            async with self._lock:
+                ids = sorted(self._tag_ids_from_detected())
+            return {"tags": ids, "timestamp_ms": self._cycle_ts}
+
+        if cmd == "list_uuids":
+            async with self._lock:
+                return {
+                    "uuids": [u.decode() for u in self._detected.keys()],
+                    "timestamp_ms": self._cycle_ts,
+                }
+
+        if cmd == "get_pose":
+            tag_id_raw = command.get("tag_id")
+            if tag_id_raw is None:
+                raise Exception("get_pose requires a 'tag_id' field")
+            try:
+                tag_id = int(tag_id_raw)
+            except (TypeError, ValueError):
+                raise Exception(f"tag_id must be an int, got {tag_id_raw!r}")
+            target_label = f"april_tag_{tag_id}_centroid"
+            async with self._lock:
+                for t in self._detected.values():
+                    if t.physical_object.label == target_label:
+                        return {
+                            "tag_id": tag_id,
+                            "pose": _pose_to_dict(t.pose_in_observer_frame.pose),
+                            "observer_frame": t.pose_in_observer_frame.reference_frame,
+                            "timestamp_ms": self._cycle_ts,
+                        }
+            return {"tag_id": tag_id, "pose": None}
+
+        if cmd == "get_transforms":
+            async with self._lock:
+                transforms = []
+                for uuid, t in self._detected.items():
+                    transforms.append({
+                        "uuid": uuid.decode(),
+                        "label": t.physical_object.label,
+                        "observer_frame": t.pose_in_observer_frame.reference_frame,
+                        "pose": _pose_to_dict(t.pose_in_observer_frame.pose),
+                    })
+            return {"transforms": transforms, "timestamp_ms": self._cycle_ts}
+
+        return self._debug_snapshot()
+
+    def _debug_snapshot(self) -> Mapping[str, ValueTypes]:
         loop_running = self._loop_task is not None and not self._loop_task.done()
         loop_exception = None
         if self._loop_task is not None and self._loop_task.done():
@@ -400,6 +463,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             "current_tracked_count": len(self._detected),
             "current_tracked_uuids": [u.decode() for u in self._detected.keys()],
             "subscriber_count": len(self._subscribers),
+            "cycle_ts_ms": self._cycle_ts,
             "config": {
                 "camera_name": self.camera.name if getattr(self, "camera", None) else None,
                 "tag_family": getattr(self, "tag_family", None),
@@ -407,3 +471,17 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 "detection_rate_hz": getattr(self, "detection_rate_hz", None),
             },
         }
+
+    def _tag_ids_from_detected(self) -> set:
+        ids = set()
+        for t in self._detected.values():
+            label = t.physical_object.label
+            # Labels are "april_tag_<id>_centroid" or "april_tag_<id>_origin".
+            if label.startswith("april_tag_"):
+                parts = label.split("_")
+                if len(parts) >= 4:
+                    try:
+                        ids.add(int(parts[2]))
+                    except ValueError:
+                        pass
+        return ids
