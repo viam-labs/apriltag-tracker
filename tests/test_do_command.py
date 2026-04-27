@@ -70,13 +70,18 @@ async def test_list_uuids_returns_string_uuids():
 # ---------- get_pose ----------
 
 @pytest.mark.asyncio
-async def test_get_pose_returns_centroid_for_known_id():
+async def test_get_pose_returns_origin_and_centroid_for_known_id():
     v = _bare_visualizer()
     _populate_two_tags(v)
     result = await v.do_command({"command": "get_pose", "tag_id": 21})
     assert result["tag_id"] == 21
-    assert result["pose"] is not None
-    assert result["observer_frame"] == "cam"
+    # Both nested entries exist with camera_frame populated; world_frame
+    # is None here because the bare visualizer has no motion service set.
+    assert result["origin"]["camera_frame"] is not None
+    assert result["origin"]["world_frame"] is None
+    assert result["centroid"]["camera_frame"] is not None
+    assert result["centroid"]["world_frame"] is None
+    assert result["camera_name"] == "cam"
 
 
 @pytest.mark.asyncio
@@ -84,7 +89,7 @@ async def test_get_pose_returns_null_for_unknown_id():
     v = _bare_visualizer()
     _populate_two_tags(v)
     result = await v.do_command({"command": "get_pose", "tag_id": 999})
-    assert result == {"tag_id": 999, "pose": None}
+    assert result == {"tag_id": 999, "origin": None, "centroid": None}
 
 
 @pytest.mark.asyncio
@@ -93,7 +98,7 @@ async def test_get_pose_accepts_string_tag_id():
     _populate_two_tags(v)
     result = await v.do_command({"command": "get_pose", "tag_id": "21"})
     assert result["tag_id"] == 21
-    assert result["pose"] is not None
+    assert result["centroid"]["camera_frame"] is not None
 
 
 @pytest.mark.asyncio
@@ -101,6 +106,42 @@ async def test_get_pose_missing_tag_id_raises():
     v = _bare_visualizer()
     with pytest.raises(Exception, match="tag_id"):
         await v.do_command({"command": "get_pose"})
+
+
+@pytest.mark.asyncio
+async def test_get_pose_world_frame_uses_motion_service():
+    """When a motion service is set, world_frame should be populated
+    by composing through motion.get_pose."""
+    v = _bare_visualizer()
+    _populate_two_tags(v)
+
+    # Stub motion: returns the camera-frame pose offset by (1000, 0, 0)
+    # in world, regardless of input. Just enough to verify wiring.
+    from viam.proto.common import Pose as ProtoPose, PoseInFrame
+
+    class StubMotion:
+        async def get_pose(self, *, component_name, destination_frame, supplemental_transforms):
+            assert destination_frame == "world"
+            assert len(supplemental_transforms) == 1
+            sup = supplemental_transforms[0]
+            assert sup.reference_frame == component_name
+            base = sup.pose_in_observer_frame.pose
+            return PoseInFrame(
+                reference_frame="world",
+                pose=ProtoPose(
+                    x=base.x + 1000, y=base.y, z=base.z,
+                    o_x=base.o_x, o_y=base.o_y, o_z=base.o_z,
+                    theta=base.theta,
+                ),
+            )
+
+    v.motion = StubMotion()
+    result = await v.do_command({"command": "get_pose", "tag_id": 21})
+    assert result["centroid"]["world_frame"] is not None
+    assert result["centroid"]["world_frame"]["x"] == pytest.approx(
+        result["centroid"]["camera_frame"]["x"] + 1000
+    )
+    assert result["origin"]["world_frame"] is not None
 
 
 # ---------- get_transforms ----------

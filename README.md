@@ -38,6 +38,7 @@ Add the service to your machine's configuration:
 | `tag_width_mm` | float | **Required** | — | Physical tag width corner-to-corner in millimeters. Required for metric pose estimation; an incorrect value produces tags at the wrong distance. |
 | `detection_rate_hz` | float | Optional | `5.0` | Detection loop rate. Each cycle pulls a frame, runs detection, and emits diff events to subscribers. Higher rates increase camera and CPU load. |
 | `centroid_alpha` | float | Optional | `1.0` | Opacity of the centroid box geometry, between `0.0` (fully transparent) and `1.0` (fully opaque). At values below `1.0` the box is published with `metadata: {"opacity": <alpha>}` so the 3D scene viewer can render it translucent and let underlying point clouds / scene content show through. The BL-corner origin marker stays opaque regardless. *Note:* requires a 3D scene viewer that honors `Transform.metadata.opacity`. |
+| `motion_service_name` | string | Optional | `"builtin"` | Name of the motion service the visualizer will use to compose camera-frame poses to world frame in `do_command`'s `get_pose` response. Declared as an optional implicit dependency, so if no service with this name is configured on the machine, world-frame poses are returned as `null` and a warning is logged at reconfigure time. |
 
 ### Camera requirements
 
@@ -79,17 +80,120 @@ There is no movement threshold and no flicker debouncing: every cycle a tag is v
 
 ### Querying via `do_command`
 
-Other modules and SDK clients can query the visualizer directly with `do_command`. The dispatch key is `"command"`:
+Other modules and SDK clients can query the visualizer directly with `do_command`. The dispatch key is `"command"`. All commands include a `timestamp_ms` field on success — the epoch-millisecond suffix that's also embedded in the current cycle's UUIDs, so callers can correlate a query response with a specific detection cycle.
 
-| `command` | Other input | Returns |
-| --------- | ----------- | ------- |
-| `list_tags` | — | `{ "tags": [21, 23], "timestamp_ms": ... }` — sorted unique tag ids currently detected. |
-| `list_uuids` | — | `{ "uuids": ["april_tag_21_centroid_<ts>", ...], "timestamp_ms": ... }` — every UUID in the current state. |
-| `get_pose` | `"tag_id": 21` | `{ "tag_id": 21, "pose": {x, y, z, o_x, o_y, o_z, theta}, "observer_frame": "<camera_name>", "timestamp_ms": ... }` — or `{ "tag_id": 21, "pose": null }` if not currently detected. Pose is the centroid pose, in the camera's reference frame, in millimeters. |
-| `get_transforms` | — | `{ "transforms": [{uuid, label, observer_frame, pose, metadata}, ...], "timestamp_ms": ... }` — full snapshot of every current transform. The `metadata` field reflects what the visualizer is sending on the wire (e.g. `{"opacity": 0.4}` on centroid entries when `centroid_alpha` is below 1.0); useful for verifying a renderer-side issue isn't on this module's side. |
-| (no `command` key) | — | A debug snapshot — loop liveness, last cycle timing, intrinsics, distortion params, sensor offset, mime types reported by the camera, current tracked UUIDs, configured attributes. Useful for diagnosing why detection isn't working. |
+#### `list_tags` — currently detected tag ids
 
-Poses come back in the camera's reference frame (`observer_frame`). To express them in the world frame, callers can compose with the camera's frame using Viam's motion service (`motion.get_pose("<camera_name>", "world")`).
+```python
+await visualizer.do_command({"command": "list_tags"})
+```
+```json
+{
+  "tags": [20, 21],
+  "timestamp_ms": 1777324893012
+}
+```
+
+Sorted unique tag ids currently detected. Empty list if no tags are visible.
+
+#### `list_uuids` — currently published UUIDs
+
+```python
+await visualizer.do_command({"command": "list_uuids"})
+```
+```json
+{
+  "uuids": [
+    "april_tag_20_origin_1777324893012",
+    "april_tag_20_centroid_1777324893012",
+    "april_tag_21_origin_1777324893012",
+    "april_tag_21_centroid_1777324893012"
+  ],
+  "timestamp_ms": 1777324893012
+}
+```
+
+Two UUIDs per detected tag. The epoch-ms suffix changes every cycle (see "Event semantics") — these UUIDs are only valid for the cycle whose `timestamp_ms` matches.
+
+#### `get_pose` — full pose for one tag
+
+```python
+await visualizer.do_command({"command": "get_pose", "tag_id": 21})
+```
+```json
+{
+  "tag_id": 21,
+  "origin": {
+    "camera_frame": {"x": -100.5, "y": 100.5, "z": 1500.0,
+                     "o_x": 0.0, "o_y": 0.0, "o_z": -1.0, "theta": 180.0},
+    "world_frame": {"x": -85.85, "y": 100.68, "z": 1500.34,
+                    "o_x": 0.0, "o_y": 0.0, "o_z": -1.0, "theta": 180.0}
+  },
+  "centroid": {
+    "camera_frame": {"x": 0.0, "y": 0.0, "z": 1500.0,
+                     "o_x": 0.0, "o_y": 0.0, "o_z": -1.0, "theta": 180.0},
+    "world_frame": {"x": 14.65, "y": 0.18, "z": 1500.34,
+                    "o_x": 0.0, "o_y": 0.0, "o_z": -1.0, "theta": 180.0}
+  },
+  "camera_name": "realsense-cam",
+  "timestamp_ms": 1777324893012
+}
+```
+
+Both the **origin marker** (BL corner) and the **centroid** (tag center) come back, each in the camera reference frame and in the world frame. World-frame composition is delegated to the configured motion service (`motion_service_name` attribute, default `"builtin"`); if motion isn't available the corresponding `world_frame` is `null` and a warning is logged at reconfigure time. All translations are in millimeters.
+
+If the tag id is not currently detected:
+
+```json
+{
+  "tag_id": 21,
+  "origin": null,
+  "centroid": null
+}
+```
+
+Either `origin` or `centroid` may individually be `null` if only one of the two transforms is in the current state (rare — they're emitted together).
+
+The `tag_id` argument may be an int or a numeric string (`"21"` is accepted). A non-numeric value raises.
+
+#### `get_transforms` — full snapshot of every current transform
+
+```python
+await visualizer.do_command({"command": "get_transforms"})
+```
+```json
+{
+  "transforms": [
+    {
+      "uuid": "april_tag_21_origin_1777324893012",
+      "label": "april_tag_21_origin",
+      "observer_frame": "realsense-cam",
+      "pose": {"x": -100.5, "y": 100.5, "z": 1500.0,
+               "o_x": 0.0, "o_y": 0.0, "o_z": -1.0, "theta": 180.0},
+      "metadata": {}
+    },
+    {
+      "uuid": "april_tag_21_centroid_1777324893012",
+      "label": "april_tag_21_centroid",
+      "observer_frame": "realsense-cam",
+      "pose": {"x": 0.0, "y": 0.0, "z": 1500.0,
+               "o_x": 0.0, "o_y": 0.0, "o_z": -1.0, "theta": 180.0},
+      "metadata": {"opacity": 0.4}
+    }
+  ],
+  "timestamp_ms": 1777324893012
+}
+```
+
+Returns every transform in the current cycle, with the same fields the world state store stream would deliver. `metadata` mirrors what's on the wire (e.g. `{"opacity": 0.4}` on centroid entries when `centroid_alpha` is below 1.0). Useful for verifying that a renderer-side issue isn't on this module's side. Poses are in the camera reference frame; to compose to world for any of them, use `get_pose` (which does the composition) or call your motion service directly.
+
+#### No `command` — debug snapshot
+
+```python
+await visualizer.do_command({})
+```
+
+Returns a snapshot useful for diagnosing why detection or rendering isn't working: loop liveness, exception state, last cycle timestamp and error, camera intrinsics, distortion parameters, sensor extrinsic offset (the RealSense color↔depth correction we automatically apply), mime types the camera returned in the most recent cycle, the gray-image shape, current tracked UUIDs, and the resolved config attributes. See the source for the full field list.
 
 ## 2D overlay view — `overlay_camera`
 

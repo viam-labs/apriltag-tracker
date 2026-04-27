@@ -30,6 +30,7 @@ from viam.proto.service.worldstatestore import (
 from viam.resource.base import ResourceBase
 from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
+from viam.services.motion import MotionClient
 from viam.services.worldstatestore import WorldStateStore
 from viam.utils import ValueTypes, dict_to_struct, struct_to_dict
 
@@ -42,8 +43,10 @@ FAMILY_ATTR = "tag_family"
 WIDTH_ATTR = "tag_width_mm"
 RATE_ATTR = "detection_rate_hz"
 ALPHA_ATTR = "centroid_alpha"
+MOTION_ATTR = "motion_service_name"
 DEFAULT_RATE_HZ = 5.0
 DEFAULT_CENTROID_ALPHA = 1.0
+DEFAULT_MOTION_NAME = "builtin"
 
 
 def _pose_to_dict(pose: Pose) -> Mapping[str, float]:
@@ -109,6 +112,10 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         self._last_image_mime_types: List[str] = []
         self._last_gray_shape: Optional[Tuple[int, int]] = None
         self._last_tag_ids: List[int] = []
+        # Motion service used to compose camera-frame poses to world.
+        # Resolved as an optional implicit dependency in reconfigure;
+        # None when the configured service name isn't available.
+        self.motion: Optional[MotionClient] = None
 
     @classmethod
     def new(
@@ -136,7 +143,8 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         alpha = attrs.get(ALPHA_ATTR, DEFAULT_CENTROID_ALPHA)
         if not 0.0 <= float(alpha) <= 1.0:
             raise Exception(f"{ALPHA_ATTR} must be between 0.0 and 1.0.")
-        return [str(cam)], []
+        motion_name = str(attrs.get(MOTION_ATTR, DEFAULT_MOTION_NAME))
+        return [str(cam)], [motion_name]
 
     def reconfigure(
         self,
@@ -152,6 +160,13 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         self.tag_width_mm = float(attrs[WIDTH_ATTR])
         self.detection_rate_hz = float(attrs.get(RATE_ATTR, DEFAULT_RATE_HZ))
         self.centroid_alpha = float(attrs.get(ALPHA_ATTR, DEFAULT_CENTROID_ALPHA))
+        motion_name = str(attrs.get(MOTION_ATTR, DEFAULT_MOTION_NAME))
+        self.motion = dependencies.get(MotionClient.get_resource_name(motion_name))
+        if self.motion is None:
+            LOGGER.warning(
+                f"motion service '{motion_name}' not available; world-frame "
+                f"poses will not be returned by do_command get_pose"
+            )
 
         if self._loop_task is not None:
             self._loop_task.cancel()
@@ -452,17 +467,42 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 tag_id = int(tag_id_raw)
             except (TypeError, ValueError):
                 raise Exception(f"tag_id must be an int, got {tag_id_raw!r}")
-            target_label = f"april_tag_{tag_id}_centroid"
+            origin_label = f"april_tag_{tag_id}_origin"
+            centroid_label = f"april_tag_{tag_id}_centroid"
             async with self._lock:
+                origin_tf = None
+                centroid_tf = None
                 for t in self._detected.values():
-                    if t.physical_object.label == target_label:
-                        return {
-                            "tag_id": tag_id,
-                            "pose": _pose_to_dict(t.pose_in_observer_frame.pose),
-                            "observer_frame": t.pose_in_observer_frame.reference_frame,
-                            "timestamp_ms": self._cycle_ts,
-                        }
-            return {"tag_id": tag_id, "pose": None}
+                    label = t.physical_object.label
+                    if label == origin_label:
+                        origin_tf = t
+                    elif label == centroid_label:
+                        centroid_tf = t
+            if origin_tf is None and centroid_tf is None:
+                return {"tag_id": tag_id, "origin": None, "centroid": None}
+            origin_world = await self._world_pose(origin_tf) if origin_tf else None
+            centroid_world = await self._world_pose(centroid_tf) if centroid_tf else None
+            return {
+                "tag_id": tag_id,
+                "origin": (
+                    {
+                        "camera_frame": _pose_to_dict(origin_tf.pose_in_observer_frame.pose),
+                        "world_frame": origin_world,
+                    }
+                    if origin_tf is not None
+                    else None
+                ),
+                "centroid": (
+                    {
+                        "camera_frame": _pose_to_dict(centroid_tf.pose_in_observer_frame.pose),
+                        "world_frame": centroid_world,
+                    }
+                    if centroid_tf is not None
+                    else None
+                ),
+                "camera_name": self.camera.name,
+                "timestamp_ms": self._cycle_ts,
+            }
 
         if cmd == "get_transforms":
             async with self._lock:
@@ -516,6 +556,27 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 "centroid_alpha": getattr(self, "centroid_alpha", None),
             },
         }
+
+    async def _world_pose(
+        self, tf: Transform
+    ) -> Optional[Mapping[str, float]]:
+        """Compose a camera-frame transform to world via the motion
+        service, using the transform itself as a supplemental frame.
+        Returns None when motion isn't available or the call fails."""
+        if self.motion is None:
+            return None
+        try:
+            world_pif = await self.motion.get_pose(
+                component_name=tf.reference_frame,
+                destination_frame="world",
+                supplemental_transforms=[tf],
+            )
+            return _pose_to_dict(world_pif.pose)
+        except Exception as e:
+            LOGGER.warning(
+                f"motion.get_pose for {tf.reference_frame!r} -> world failed: {e}"
+            )
+            return None
 
     def _tag_ids_from_detected(self) -> set:
         ids = set()

@@ -103,11 +103,11 @@ Dispatches on a `"command"` field in the input. Used by other modules / SDK clie
 
 - `list_tags` → `{tags: [int], timestamp_ms}` — sorted unique tag ids currently detected.
 - `list_uuids` → `{uuids: [str], timestamp_ms}` — current UUIDs (with timestamp suffixes).
-- `get_pose` with `tag_id: int` → `{tag_id, pose: {x,y,z,o_x,o_y,o_z,theta} or null, observer_frame, timestamp_ms}` — looks up the centroid pose for the tag id.
+- `get_pose` with `tag_id: int` → `{tag_id, origin: {camera_frame, world_frame}, centroid: {camera_frame, world_frame}, camera_name, timestamp_ms}` — both the BL-corner origin marker and the tag-center centroid, each in the camera reference frame and in world. World-frame composition uses the configured motion service (`motion_service_name`, default `"builtin"`); if motion isn't available the corresponding `world_frame` is `null` and a warning was logged at reconfigure time. Returns `{tag_id, origin: null, centroid: null}` when the tag id isn't currently in `_detected`. Accepts numeric strings as well as ints for `tag_id`.
 - `get_transforms` → `{transforms: [{uuid, label, observer_frame, pose, metadata}], timestamp_ms}` — full snapshot. `metadata` mirrors what's on the wire; centroid entries carry `{"opacity": <alpha>}` when `centroid_alpha < 1.0`. Useful for ruling out our side when the 3D scene viewer doesn't render an effect we expected.
 - No `command` key → debug snapshot (loop liveness, last cycle timing, intrinsics, distortion params, sensor_offset_mm, mime types, current uuids, configured attributes).
 
-Lookup helpers: `_tag_ids_from_detected` parses tag ids from the unsuffixed labels; `_pose_to_dict` flattens a `Pose` proto into a JSON-friendly dict. Both at module scope in `visualizer.py`.
+Lookup helpers: `_tag_ids_from_detected` parses tag ids from the unsuffixed labels; `_pose_to_dict` flattens a `Pose` proto into a JSON-friendly dict; `_world_pose` composes a Transform's camera-frame pose into world via `motion.get_pose(component_name=tf.reference_frame, destination_frame="world", supplemental_transforms=[tf])` — passing the tag transform itself as a supplemental frame, so the motion service walks the augmented frame system rather than us re-implementing SE(3) composition.
 
 ### Overlay camera (`overlay_camera.py`)
 

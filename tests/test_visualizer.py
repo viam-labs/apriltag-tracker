@@ -61,7 +61,7 @@ def test_pose_to_dict_returns_all_fields():
 
 # ---------- validate_config ----------
 
-def test_validate_config_returns_required_dep_tuple():
+def test_validate_config_returns_required_and_optional_deps():
     cfg = _make_config({
         "camera_name": "realsense-cam",
         "tag_family": "tag36h11",
@@ -69,7 +69,18 @@ def test_validate_config_returns_required_dep_tuple():
     })
     required, optional = AprilTagVisualizer.validate_config(cfg)
     assert required == ["realsense-cam"]
-    assert optional == []
+    # Default motion service name is "builtin", declared optional so the
+    # framework provides it when present and we degrade gracefully when not.
+    assert optional == ["builtin"]
+
+
+def test_validate_config_uses_configured_motion_service_name():
+    cfg = _make_config({
+        "camera_name": "c", "tag_family": "tag36h11",
+        "tag_width_mm": 150.0, "motion_service_name": "my-motion",
+    })
+    required, optional = AprilTagVisualizer.validate_config(cfg)
+    assert optional == ["my-motion"]
 
 
 def test_validate_config_missing_camera_name_raises():
