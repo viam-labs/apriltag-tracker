@@ -51,6 +51,10 @@ Some cameras report intrinsics for one sensor (e.g. color) while treating a diff
 
 ### How tags appear in the 3D scene
 
+![Two AprilTags rendered in the 3D scene tab](3d_scene.png)
+
+Two AprilTags (ids 20 and 21) detected and rendered in the **3D SCENE** tab, overlaid on the realsense point cloud. The picture-in-picture in the corner shows the `apriltag-overlay` camera feed; the sidebar lists the four world-state-store entries per detection cycle (centroid + origin × two tags).
+
 Each detected tag is published as **two** world state transforms per cycle:
 
 - `april_tag_<id>_origin_<epoch_ms>` — a 10 mm marker cube at the tag's bottom-left corner. This is what carries the visible axes triad. Its frame has X right, Y up, and Z pointing into the tag (away from the camera).
