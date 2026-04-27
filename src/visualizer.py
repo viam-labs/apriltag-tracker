@@ -32,7 +32,7 @@ from viam.resource.base import ResourceBase
 from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.services.worldstatestore import WorldStateStore
-from viam.utils import ValueTypes, struct_to_dict
+from viam.utils import ValueTypes, dict_to_struct, struct_to_dict
 
 from .spatialmath import quaternion_to_orientation_vector
 
@@ -54,7 +54,9 @@ CAMERA_ATTR = "camera_name"
 FAMILY_ATTR = "tag_family"
 WIDTH_ATTR = "tag_width_mm"
 RATE_ATTR = "detection_rate_hz"
+ALPHA_ATTR = "centroid_alpha"
 DEFAULT_RATE_HZ = 5.0
+DEFAULT_CENTROID_ALPHA = 1.0
 
 
 class AprilTagVisualizer(WorldStateStore, EasyResource):
@@ -115,6 +117,9 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         rate = attrs.get(RATE_ATTR, DEFAULT_RATE_HZ)
         if float(rate) <= 0:
             raise Exception(f"{RATE_ATTR} must be > 0.")
+        alpha = attrs.get(ALPHA_ATTR, DEFAULT_CENTROID_ALPHA)
+        if not 0.0 <= float(alpha) <= 1.0:
+            raise Exception(f"{ALPHA_ATTR} must be between 0.0 and 1.0.")
         return [str(cam)], []
 
     def reconfigure(
@@ -130,6 +135,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         self.tag_family = str(attrs[FAMILY_ATTR])
         self.tag_width_mm = float(attrs[WIDTH_ATTR])
         self.detection_rate_hz = float(attrs.get(RATE_ATTR, DEFAULT_RATE_HZ))
+        self.centroid_alpha = float(attrs.get(ALPHA_ATTR, DEFAULT_CENTROID_ALPHA))
 
         if self._loop_task is not None:
             self._loop_task.cancel()
@@ -313,8 +319,10 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 label=origin_label,
             ),
         )
-        # Centroid: full-size box at the tag center.
-        centroid_tf = Transform(
+        # Centroid: full-size box at the tag center. Optional opacity
+        # in metadata (read by the 3D scene renderer) lets the user
+        # see point cloud / underlying scene through the tag.
+        centroid_tf_kwargs = dict(
             uuid=centroid_uuid.encode(),
             reference_frame=centroid_uuid,
             pose_in_observer_frame=PoseInFrame(
@@ -325,6 +333,11 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 label=centroid_label,
             ),
         )
+        if self.centroid_alpha < 1.0:
+            centroid_tf_kwargs["metadata"] = dict_to_struct(
+                {"opacity": self.centroid_alpha}
+            )
+        centroid_tf = Transform(**centroid_tf_kwargs)
         return [origin_tf, centroid_tf]
 
     def _broadcast(self, msg: StreamTransformChangesResponse):
@@ -469,6 +482,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 "tag_family": getattr(self, "tag_family", None),
                 "tag_width_mm": getattr(self, "tag_width_mm", None),
                 "detection_rate_hz": getattr(self, "detection_rate_hz", None),
+                "centroid_alpha": getattr(self, "centroid_alpha", None),
             },
         }
 
