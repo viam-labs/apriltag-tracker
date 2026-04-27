@@ -37,6 +37,7 @@ Add the service to your machine's configuration:
 | `tag_family` | string | **Required** | — | AprilTag family to detect, e.g. `tag36h11`, `tag25h9`, `tagStandard41h12`. Comma-separated values are accepted to detect multiple families simultaneously. |
 | `tag_width_mm` | float | **Required** | — | Physical tag width corner-to-corner in millimeters. Required for metric pose estimation; an incorrect value produces tags at the wrong distance. |
 | `detection_rate_hz` | float | Optional | `5.0` | Detection loop rate. Each cycle pulls a frame, runs detection, and emits diff events to subscribers. Higher rates increase camera and CPU load. |
+| `centroid_alpha` | float | Optional | `1.0` | Opacity of the centroid box geometry, between `0.0` (fully transparent) and `1.0` (fully opaque). At values below `1.0` the box is published with `metadata: {"opacity": <alpha>}` so the 3D scene viewer can render it translucent and let underlying point clouds / scene content show through. The BL-corner origin marker stays opaque regardless. *Note:* requires a 3D scene viewer that honors `Transform.metadata.opacity`. |
 
 ### Camera requirements
 
@@ -81,7 +82,7 @@ Other modules and SDK clients can query the visualizer directly with `do_command
 | `list_tags` | — | `{ "tags": [21, 23], "timestamp_ms": ... }` — sorted unique tag ids currently detected. |
 | `list_uuids` | — | `{ "uuids": ["april_tag_21_centroid_<ts>", ...], "timestamp_ms": ... }` — every UUID in the current state. |
 | `get_pose` | `"tag_id": 21` | `{ "tag_id": 21, "pose": {x, y, z, o_x, o_y, o_z, theta}, "observer_frame": "<camera_name>", "timestamp_ms": ... }` — or `{ "tag_id": 21, "pose": null }` if not currently detected. Pose is the centroid pose, in the camera's reference frame, in millimeters. |
-| `get_transforms` | — | `{ "transforms": [{uuid, label, observer_frame, pose}, ...], "timestamp_ms": ... }` — full snapshot of every current transform. |
+| `get_transforms` | — | `{ "transforms": [{uuid, label, observer_frame, pose, metadata}, ...], "timestamp_ms": ... }` — full snapshot of every current transform. The `metadata` field reflects what the visualizer is sending on the wire (e.g. `{"opacity": 0.4}` on centroid entries when `centroid_alpha` is below 1.0); useful for verifying a renderer-side issue isn't on this module's side. |
 | (no `command` key) | — | A debug snapshot — loop liveness, last cycle timing, intrinsics, distortion params, sensor offset, mime types reported by the camera, current tracked UUIDs, configured attributes. Useful for diagnosing why detection isn't working. |
 
 Poses come back in the camera's reference frame (`observer_frame`). To express them in the world frame, callers can compose with the camera's frame using Viam's motion service (`motion.get_pose("<camera_name>", "world")`).
@@ -130,6 +131,14 @@ python3 -m venv .venv
 ```
 
 The module expects to be launched by `viam-server` via `run.sh`, which provisions a virtualenv and installs dependencies before exec-ing the entrypoint.
+
+## Tests
+
+```sh
+make test
+```
+
+Installs `requirements-dev.txt` (pytest + pytest-asyncio on top of runtime deps) and runs the suite under `tests/`. The tests construct fake apriltag detections and exercise the per-tag transform math, config validation, and the `do_command` dispatch surface — no live camera required. Tests must be run from the repo root because `spatialmath.py` loads `libviam_rust_utils-linux_<arch>.so` via a relative path.
 
 ## Build
 

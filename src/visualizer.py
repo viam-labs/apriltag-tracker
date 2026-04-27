@@ -13,7 +13,6 @@ from viam.components.camera import Camera
 from viam.logging import getLogger
 from viam.media.utils.pil import viam_to_pil_image
 from viam.media.video import CameraMimeType
-from viam.module.module import Module  # noqa: F401
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.common import (
     Geometry,
@@ -38,8 +37,17 @@ from .spatialmath import quaternion_to_orientation_vector
 
 LOGGER = getLogger(__name__)
 
+CAMERA_ATTR = "camera_name"
+FAMILY_ATTR = "tag_family"
+WIDTH_ATTR = "tag_width_mm"
+RATE_ATTR = "detection_rate_hz"
+ALPHA_ATTR = "centroid_alpha"
+DEFAULT_RATE_HZ = 5.0
+DEFAULT_CENTROID_ALPHA = 1.0
+
 
 def _pose_to_dict(pose: Pose) -> Mapping[str, float]:
+    """Flatten a Pose proto into a JSON-friendly dict for do_command responses."""
     return {
         "x": pose.x,
         "y": pose.y,
@@ -50,16 +58,24 @@ def _pose_to_dict(pose: Pose) -> Mapping[str, float]:
         "theta": pose.theta,
     }
 
-CAMERA_ATTR = "camera_name"
-FAMILY_ATTR = "tag_family"
-WIDTH_ATTR = "tag_width_mm"
-RATE_ATTR = "detection_rate_hz"
-ALPHA_ATTR = "centroid_alpha"
-DEFAULT_RATE_HZ = 5.0
-DEFAULT_CENTROID_ALPHA = 1.0
-
 
 class AprilTagVisualizer(WorldStateStore, EasyResource):
+    """Continuous AprilTag detector that publishes detected tags as
+    world state transforms for the Viam 3D scene viewer.
+
+    Implements the `rdk:service:world_state_store` API. A background
+    detect loop runs at ``detection_rate_hz``, detecting tags in JPEG
+    frames pulled from a configured camera component. For each detected
+    tag the visualizer emits two `Transform` protos per cycle — a
+    bottom-left-corner origin marker and a tag-area centroid box —
+    diffed against the previous cycle so the renderer always sees
+    fresh ADDED events for each cycle's UUIDs.
+
+    Configurable via a small set of top-level attributes (see
+    ``CAMERA_ATTR`` and friends in this module). Inspectable at runtime
+    via ``do_command`` — see :py:meth:`do_command` for the dispatch
+    surface."""
+
     MODEL: ClassVar[Model] = Model(
         ModelFamily("shrews-testing", "apriltag-tracker"), "april_tag_visualizer"
     )
@@ -400,6 +416,20 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         timeout: Optional[float] = None,
         **kwargs,
     ) -> Mapping[str, ValueTypes]:
+        """Dispatch on the ``command`` field of the input.
+
+        Supported commands:
+
+        - ``list_tags`` — ``{"tags": [int], "timestamp_ms": int}``
+        - ``list_uuids`` — ``{"uuids": [str], "timestamp_ms": int}``
+        - ``get_pose`` (with ``tag_id: int``) —
+          ``{"tag_id", "pose": {x, y, z, o_x, o_y, o_z, theta}, "observer_frame", "timestamp_ms"}``
+          or ``{"tag_id", "pose": null}`` if not currently detected
+        - ``get_transforms`` —
+          ``{"transforms": [{uuid, label, observer_frame, pose, metadata}], "timestamp_ms"}``
+        - no ``command`` key — full debug snapshot of loop state,
+          intrinsics, distortion, sensor offset, mime types, current
+          UUIDs, and configured attributes."""
         cmd = command.get("command") if command else None
 
         if cmd == "list_tags":

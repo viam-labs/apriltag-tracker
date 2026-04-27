@@ -28,6 +28,23 @@ TEXT_THICKNESS = 2
 
 
 class OverlayCamera(Camera, EasyResource):
+    """Camera component that wraps another camera and annotates each
+    detected AprilTag with a green polygon outlining the four corners
+    (rotated and skewed to match the tag's perspective) and the tag id
+    labelled in red at the center.
+
+    Implements the `rdk:component:camera` API. ``get_image`` and
+    ``get_images`` decode the source camera's JPEG output, run
+    `dt_apriltags` detection on a grayscale view, draw corner polygons
+    and id labels via ``cv2.polylines``/``cv2.putText``, and re-encode
+    JPEG. ``get_properties`` and ``get_point_cloud`` proxy unchanged so
+    intrinsics and depth queries behave like the source camera.
+    Non-JPEG images pass through unmodified.
+
+    Detection runs synchronously per request rather than from a
+    continuous background loop — cameras are polled by clients on
+    demand and a continuous loop would do redundant work."""
+
     MODEL: ClassVar[Model] = Model(
         ModelFamily("shrews-testing", "apriltag-tracker"), "overlay_camera"
     )

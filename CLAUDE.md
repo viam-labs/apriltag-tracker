@@ -21,9 +21,18 @@ src/spatialmath.py   # quaternion -> Viam orientation vector via libviam_rust_ut
 libviam_rust_utils-linux_*.so   # Native helpers for the orientation-vector conversion.
 meta.json            # Module metadata. Two model entries.
 requirements.txt     # Python deps. viam-sdk must be a version that exposes viam.services.worldstatestore.
-Makefile             # `make module.tar.gz` packages the module for upload.
+requirements-dev.txt # Adds pytest and pytest-asyncio on top of runtime deps for the tests/.
+pytest.ini           # asyncio_mode = auto and testpaths = tests.
+Makefile             # `make module.tar.gz` packages the module for upload; `make test` runs pytest.
 run.sh               # viam-server entrypoint. Creates venv, installs deps, exec's `python -m src.main`.
+tests/               # pytest suite for visualizer.py — exercises pose math, config validation, and do_command.
 ```
+
+## Tests
+
+`make test` from the repo root installs dev deps and runs the suite. Tests bypass `EasyResource.new()` by constructing the visualizer with `__new__` + manual `__init__`, then poking the attributes the methods under test read (camera name, tag width, alpha, sensor offset). Fake "tag" inputs are `SimpleNamespace`s mimicking the `tag_id`/`pose_R`/`pose_t` fields `_build_transforms` reads from `dt_apriltags.Detection`.
+
+The detection loop, RealSense communication, and renderer behavior are intentionally out of scope — those need integration testing against real hardware. The unit tests cover the deterministic, computable parts: BL corner math, Rx180 display rotation, sensor-offset application, opacity metadata wiring, UUID/label naming, validate_config, and the do_command dispatch table. **Tests must run from the repo root** because `spatialmath.py` loads `libviam_rust_utils-linux_<arch>.so` via a relative path; running pytest from `tests/` will fail to import.
 
 ## Architecture
 
@@ -73,7 +82,7 @@ The visible **labels** stay unsuffixed (`april_tag_21_centroid`, `april_tag_21_o
 `_build_transforms(tag, ts_ms)` returns a list of two `Transform` protos for each detected tag, both timestamp-suffixed for the cycle:
 
 1. **Origin marker** — UUID `april_tag_<id>_origin_<ts_ms>`, label `april_tag_<id>_origin`. A 10 mm cube placed at the tag's **bottom-left corner**. Its frame has X right, Y up, Z into the tag. Carries the user-visible axes triad. The cube is large enough that the renderer draws axes against it; 1 mm fell below the renderer's annotate-this-frame size threshold.
-2. **Centroid** — UUID `april_tag_<id>_centroid_<ts_ms>`, label `april_tag_<id>_centroid`. A `tag_width_mm × tag_width_mm × 1 mm` box at the **tag center**, covering the printed face.
+2. **Centroid** — UUID `april_tag_<id>_centroid_<ts_ms>`, label `april_tag_<id>_centroid`. A `tag_width_mm × tag_width_mm × 1 mm` box at the **tag center**, covering the printed face. When the `centroid_alpha` config attribute is below `1.0`, the centroid `Transform` is also emitted with `metadata = {"opacity": <alpha>}` so that 3D scene viewers honoring `Transform.metadata.opacity` render the box translucent. The BL-corner marker is always opaque.
 
 Two transforms are required because **the 3D scene viewer ignores `Geometry.center`**: the box is always drawn at the frame's `pose_in_observer_frame.pose` regardless of any offset specified inside the geometry. Pallet-config hits the same constraint and uses the same workaround — set `pose_in_observer_frame.pose` to where the geometry should land and don't bother with `Geometry.center`. To get both a BL-anchored origin marker AND a tag-area geometry from a single detection, the two anchors must live on separate frames.
 
@@ -95,7 +104,7 @@ Dispatches on a `"command"` field in the input. Used by other modules / SDK clie
 - `list_tags` → `{tags: [int], timestamp_ms}` — sorted unique tag ids currently detected.
 - `list_uuids` → `{uuids: [str], timestamp_ms}` — current UUIDs (with timestamp suffixes).
 - `get_pose` with `tag_id: int` → `{tag_id, pose: {x,y,z,o_x,o_y,o_z,theta} or null, observer_frame, timestamp_ms}` — looks up the centroid pose for the tag id.
-- `get_transforms` → `{transforms: [{uuid, label, observer_frame, pose}], timestamp_ms}` — full snapshot.
+- `get_transforms` → `{transforms: [{uuid, label, observer_frame, pose, metadata}], timestamp_ms}` — full snapshot. `metadata` mirrors what's on the wire; centroid entries carry `{"opacity": <alpha>}` when `centroid_alpha < 1.0`. Useful for ruling out our side when the 3D scene viewer doesn't render an effect we expected.
 - No `command` key → debug snapshot (loop liveness, last cycle timing, intrinsics, distortion params, sensor_offset_mm, mime types, current uuids, configured attributes).
 
 Lookup helpers: `_tag_ids_from_detected` parses tag ids from the unsuffixed labels; `_pose_to_dict` flattens a `Pose` proto into a JSON-friendly dict. Both at module scope in `visualizer.py`.
