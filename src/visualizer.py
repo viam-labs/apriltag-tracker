@@ -62,6 +62,8 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
         self._last_cycle_at: Optional[float] = None
         self._last_cycle_error: Optional[str] = None
         self._last_intrinsics: List[float] = []
+        self._last_distortion_model: Optional[str] = None
+        self._last_distortion_params: List[float] = []
         self._last_image_mime_types: List[str] = []
         self._last_gray_shape: Optional[Tuple[int, int]] = None
         self._last_tag_ids: List[int] = []
@@ -153,6 +155,8 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             properties.intrinsic_parameters.center_y_px,
         ]
         self._last_intrinsics = list(intrinsics)
+        self._last_distortion_model = properties.distortion_parameters.model
+        self._last_distortion_params = list(properties.distortion_parameters.parameters)
 
         cam_images = await self.camera.get_images()
         self._last_image_mime_types = [img.mime_type for img in cam_images[0]]
@@ -366,6 +370,8 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             "last_cycle_at": self._last_cycle_at,
             "last_cycle_error": self._last_cycle_error,
             "last_intrinsics": self._last_intrinsics,
+            "last_distortion_model": self._last_distortion_model,
+            "last_distortion_params": self._last_distortion_params,
             "last_image_mime_types": self._last_image_mime_types,
             "last_gray_shape": list(self._last_gray_shape) if self._last_gray_shape else None,
             "last_tag_ids": self._last_tag_ids,
