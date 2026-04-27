@@ -443,6 +443,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                         "label": t.physical_object.label,
                         "observer_frame": t.pose_in_observer_frame.reference_frame,
                         "pose": _pose_to_dict(t.pose_in_observer_frame.pose),
+                        "metadata": struct_to_dict(t.metadata),
                     })
             return {"transforms": transforms, "timestamp_ms": self._cycle_ts}
 
