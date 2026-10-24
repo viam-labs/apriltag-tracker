@@ -121,7 +121,8 @@ async def test_get_pose_world_frame_uses_motion_service():
 
     # Stub motion: returns the camera-frame pose offset by (1000, 0, 0)
     # in world, regardless of input. Just enough to verify wiring.
-    from viam.proto.common import Pose as ProtoPose, PoseInFrame
+    from viam.proto.common import Pose as ProtoPose
+    from viam.proto.common import PoseInFrame
 
     class StubMotion:
         async def get_pose(

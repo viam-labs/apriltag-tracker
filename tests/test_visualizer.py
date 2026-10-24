@@ -13,11 +13,10 @@ from viam.proto.common import Pose
 from viam.utils import dict_to_struct, struct_to_dict
 
 from src.visualizer import (
-    AprilTagVisualizer,
     DEFAULT_CENTROID_ALPHA,
+    AprilTagVisualizer,
     _pose_to_dict,
 )
-
 
 # ---------- helpers ----------
 

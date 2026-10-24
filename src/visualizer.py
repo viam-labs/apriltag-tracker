@@ -19,7 +19,6 @@ import dt_apriltags as apriltag
 import numpy as np
 from scipy.spatial.transform import Rotation
 from typing_extensions import Self
-
 from viam.components.camera import Camera
 from viam.logging import getLogger
 from viam.media.utils.pil import viam_to_pil_image

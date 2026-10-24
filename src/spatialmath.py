@@ -1,8 +1,9 @@
-from ctypes import cdll, Structure, POINTER, c_double
-from viam.proto.common import Orientation
-from viam.logging import getLogger
-from scipy.spatial.transform import Rotation
 import platform
+from ctypes import POINTER, Structure, c_double, cdll
+
+from scipy.spatial.transform import Rotation
+from viam.logging import getLogger
+from viam.proto.common import Orientation
 
 architecture = platform.machine()
 if architecture == "x86_64":

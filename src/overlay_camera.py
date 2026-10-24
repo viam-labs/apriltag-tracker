@@ -4,7 +4,6 @@ import cv2
 import dt_apriltags as apriltag
 import numpy as np
 from typing_extensions import Self
-
 from viam.components.camera import Camera
 from viam.logging import getLogger
 from viam.media.video import CameraMimeType, NamedImage, ViamImage
