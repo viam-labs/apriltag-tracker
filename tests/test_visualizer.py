@@ -3,6 +3,7 @@
 Run from the repo root: ``.venv/bin/pytest tests/`` (the spatialmath
 helper loads libviam_rust_utils via a relative path, so cwd matters).
 """
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -19,6 +20,7 @@ from src.visualizer import (
 
 
 # ---------- helpers ----------
+
 
 def _make_config(attrs):
     return ComponentConfig(attributes=dict_to_struct(attrs))
@@ -43,30 +45,36 @@ def _fake_tag(tag_id=21, t=(0.0, 0.0, 1.0), R=None):
     `_build_transforms` reads."""
     if R is None:
         R = np.eye(3)
-    return SimpleNamespace(
-        tag_id=tag_id, pose_R=R, pose_t=np.array(t).reshape(3, 1)
-    )
+    return SimpleNamespace(tag_id=tag_id, pose_R=R, pose_t=np.array(t).reshape(3, 1))
 
 
 # ---------- _pose_to_dict ----------
 
+
 def test_pose_to_dict_returns_all_fields():
     pose = Pose(x=1, y=2, z=3, o_x=0.1, o_y=0.2, o_z=0.3, theta=45)
     assert _pose_to_dict(pose) == {
-        "x": 1, "y": 2, "z": 3,
-        "o_x": 0.1, "o_y": 0.2, "o_z": 0.3,
+        "x": 1,
+        "y": 2,
+        "z": 3,
+        "o_x": 0.1,
+        "o_y": 0.2,
+        "o_z": 0.3,
         "theta": 45,
     }
 
 
 # ---------- validate_config ----------
 
+
 def test_validate_config_returns_required_and_optional_deps():
-    cfg = _make_config({
-        "camera_name": "realsense-cam",
-        "tag_family": "tag36h11",
-        "tag_width_mm": 150.0,
-    })
+    cfg = _make_config(
+        {
+            "camera_name": "realsense-cam",
+            "tag_family": "tag36h11",
+            "tag_width_mm": 150.0,
+        }
+    )
     required, optional = AprilTagVisualizer.validate_config(cfg)
     assert required == ["realsense-cam"]
     # Default motion service name is "builtin", declared optional so the
@@ -75,10 +83,14 @@ def test_validate_config_returns_required_and_optional_deps():
 
 
 def test_validate_config_uses_configured_motion_service_name():
-    cfg = _make_config({
-        "camera_name": "c", "tag_family": "tag36h11",
-        "tag_width_mm": 150.0, "motion_service_name": "my-motion",
-    })
+    cfg = _make_config(
+        {
+            "camera_name": "c",
+            "tag_family": "tag36h11",
+            "tag_width_mm": 150.0,
+            "motion_service_name": "my-motion",
+        }
+    )
     required, optional = AprilTagVisualizer.validate_config(cfg)
     assert optional == ["my-motion"]
 
@@ -102,33 +114,46 @@ def test_validate_config_missing_tag_width_raises():
 
 
 def test_validate_config_rejects_non_positive_rate():
-    cfg = _make_config({
-        "camera_name": "c", "tag_family": "tag36h11",
-        "tag_width_mm": 150.0, "detection_rate_hz": 0,
-    })
+    cfg = _make_config(
+        {
+            "camera_name": "c",
+            "tag_family": "tag36h11",
+            "tag_width_mm": 150.0,
+            "detection_rate_hz": 0,
+        }
+    )
     with pytest.raises(Exception, match="detection_rate_hz"):
         AprilTagVisualizer.validate_config(cfg)
 
 
 def test_validate_config_rejects_alpha_out_of_range():
-    cfg = _make_config({
-        "camera_name": "c", "tag_family": "tag36h11",
-        "tag_width_mm": 150.0, "centroid_alpha": 1.5,
-    })
+    cfg = _make_config(
+        {
+            "camera_name": "c",
+            "tag_family": "tag36h11",
+            "tag_width_mm": 150.0,
+            "centroid_alpha": 1.5,
+        }
+    )
     with pytest.raises(Exception, match="centroid_alpha"):
         AprilTagVisualizer.validate_config(cfg)
 
 
 def test_validate_config_accepts_alpha_zero_and_one():
     for alpha in (0.0, 1.0, 0.5):
-        cfg = _make_config({
-            "camera_name": "c", "tag_family": "tag36h11",
-            "tag_width_mm": 150.0, "centroid_alpha": alpha,
-        })
+        cfg = _make_config(
+            {
+                "camera_name": "c",
+                "tag_family": "tag36h11",
+                "tag_width_mm": 150.0,
+                "centroid_alpha": alpha,
+            }
+        )
         AprilTagVisualizer.validate_config(cfg)  # should not raise
 
 
 # ---------- _build_transforms ----------
+
 
 def test_build_transforms_emits_two_transforms_per_tag():
     v = _bare_visualizer(tag_width_mm=150.0)
@@ -239,11 +264,14 @@ def test_build_transforms_marker_metadata_always_empty():
 
 # ---------- _tag_ids_from_detected ----------
 
+
 def test_tag_ids_from_detected_extracts_unique_ids():
     v = _bare_visualizer()
+
     # Construct fake transforms only using the bits _tag_ids_from_detected reads.
     def fake(label):
         return SimpleNamespace(physical_object=SimpleNamespace(label=label))
+
     v._detected = {
         b"k1": fake("april_tag_5_centroid"),
         b"k2": fake("april_tag_5_origin"),
@@ -261,6 +289,7 @@ def test_tag_ids_from_detected_empty_when_nothing_tracked():
 
 
 # ---------- defaults ----------
+
 
 def test_default_centroid_alpha_is_opaque():
     assert DEFAULT_CENTROID_ALPHA == 1.0

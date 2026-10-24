@@ -1,7 +1,18 @@
 import asyncio
 import math
 import time
-from typing import Any, AsyncGenerator, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple, cast
+from typing import (
+    Any,
+    AsyncGenerator,
+    ClassVar,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    cast,
+)
 
 import cv2
 import dt_apriltags as apriltag
@@ -481,12 +492,16 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             if origin_tf is None and centroid_tf is None:
                 return {"tag_id": tag_id, "origin": None, "centroid": None}
             origin_world = await self._world_pose(origin_tf) if origin_tf else None
-            centroid_world = await self._world_pose(centroid_tf) if centroid_tf else None
+            centroid_world = (
+                await self._world_pose(centroid_tf) if centroid_tf else None
+            )
             return {
                 "tag_id": tag_id,
                 "origin": (
                     {
-                        "camera_frame": _pose_to_dict(origin_tf.pose_in_observer_frame.pose),
+                        "camera_frame": _pose_to_dict(
+                            origin_tf.pose_in_observer_frame.pose
+                        ),
                         "world_frame": origin_world,
                     }
                     if origin_tf is not None
@@ -494,7 +509,9 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
                 ),
                 "centroid": (
                     {
-                        "camera_frame": _pose_to_dict(centroid_tf.pose_in_observer_frame.pose),
+                        "camera_frame": _pose_to_dict(
+                            centroid_tf.pose_in_observer_frame.pose
+                        ),
                         "world_frame": centroid_world,
                     }
                     if centroid_tf is not None
@@ -508,13 +525,15 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             async with self._lock:
                 transforms = []
                 for uuid, t in self._detected.items():
-                    transforms.append({
-                        "uuid": uuid.decode(),
-                        "label": t.physical_object.label,
-                        "observer_frame": t.pose_in_observer_frame.reference_frame,
-                        "pose": _pose_to_dict(t.pose_in_observer_frame.pose),
-                        "metadata": struct_to_dict(t.metadata),
-                    })
+                    transforms.append(
+                        {
+                            "uuid": uuid.decode(),
+                            "label": t.physical_object.label,
+                            "observer_frame": t.pose_in_observer_frame.reference_frame,
+                            "pose": _pose_to_dict(t.pose_in_observer_frame.pose),
+                            "metadata": struct_to_dict(t.metadata),
+                        }
+                    )
             return {"transforms": transforms, "timestamp_ms": self._cycle_ts}
 
         return self._debug_snapshot()
@@ -542,14 +561,18 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             "last_distortion_params": self._last_distortion_params,
             "sensor_offset_mm": list(self._sensor_offset_mm),
             "last_image_mime_types": self._last_image_mime_types,
-            "last_gray_shape": list(self._last_gray_shape) if self._last_gray_shape else None,
+            "last_gray_shape": list(self._last_gray_shape)
+            if self._last_gray_shape
+            else None,
             "last_tag_ids": self._last_tag_ids,
             "current_tracked_count": len(self._detected),
             "current_tracked_uuids": [u.decode() for u in self._detected.keys()],
             "subscriber_count": len(self._subscribers),
             "cycle_ts_ms": self._cycle_ts,
             "config": {
-                "camera_name": self.camera.name if getattr(self, "camera", None) else None,
+                "camera_name": self.camera.name
+                if getattr(self, "camera", None)
+                else None,
                 "tag_family": getattr(self, "tag_family", None),
                 "tag_width_mm": getattr(self, "tag_width_mm", None),
                 "detection_rate_hz": getattr(self, "detection_rate_hz", None),
@@ -557,9 +580,7 @@ class AprilTagVisualizer(WorldStateStore, EasyResource):
             },
         }
 
-    async def _world_pose(
-        self, tf: Transform
-    ) -> Optional[Mapping[str, float]]:
+    async def _world_pose(self, tf: Transform) -> Optional[Mapping[str, float]]:
         """Compose a camera-frame transform to world via the motion
         service, using the transform itself as a supplemental frame.
         Returns None when motion isn't available or the call fails."""
