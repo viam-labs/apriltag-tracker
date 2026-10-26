@@ -1,4 +1,5 @@
 """Async tests for the do_command dispatch surface."""
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -35,6 +36,7 @@ def _populate_two_tags(v, ts_ms=1234567890):
 
 # ---------- list_tags ----------
 
+
 @pytest.mark.asyncio
 async def test_list_tags_returns_sorted_unique_ids():
     v = _bare_visualizer()
@@ -53,6 +55,7 @@ async def test_list_tags_empty_when_nothing_detected():
 
 # ---------- list_uuids ----------
 
+
 @pytest.mark.asyncio
 async def test_list_uuids_returns_string_uuids():
     v = _bare_visualizer()
@@ -68,6 +71,7 @@ async def test_list_uuids_returns_string_uuids():
 
 
 # ---------- get_pose ----------
+
 
 @pytest.mark.asyncio
 async def test_get_pose_returns_origin_and_centroid_for_known_id():
@@ -117,10 +121,13 @@ async def test_get_pose_world_frame_uses_motion_service():
 
     # Stub motion: returns the camera-frame pose offset by (1000, 0, 0)
     # in world, regardless of input. Just enough to verify wiring.
-    from viam.proto.common import Pose as ProtoPose, PoseInFrame
+    from viam.proto.common import Pose as ProtoPose
+    from viam.proto.common import PoseInFrame
 
     class StubMotion:
-        async def get_pose(self, *, component_name, destination_frame, supplemental_transforms):
+        async def get_pose(
+            self, *, component_name, destination_frame, supplemental_transforms
+        ):
             assert destination_frame == "world"
             assert len(supplemental_transforms) == 1
             sup = supplemental_transforms[0]
@@ -129,8 +136,12 @@ async def test_get_pose_world_frame_uses_motion_service():
             return PoseInFrame(
                 reference_frame="world",
                 pose=ProtoPose(
-                    x=base.x + 1000, y=base.y, z=base.z,
-                    o_x=base.o_x, o_y=base.o_y, o_z=base.o_z,
+                    x=base.x + 1000,
+                    y=base.y,
+                    z=base.z,
+                    o_x=base.o_x,
+                    o_y=base.o_y,
+                    o_z=base.o_z,
                     theta=base.theta,
                 ),
             )
@@ -146,6 +157,7 @@ async def test_get_pose_world_frame_uses_motion_service():
 
 # ---------- get_transforms ----------
 
+
 @pytest.mark.asyncio
 async def test_get_transforms_returns_each_uuid():
     v = _bare_visualizer()
@@ -154,8 +166,10 @@ async def test_get_transforms_returns_each_uuid():
     assert len(result["transforms"]) == 4
     labels = {entry["label"] for entry in result["transforms"]}
     assert labels == {
-        "april_tag_21_origin", "april_tag_21_centroid",
-        "april_tag_42_origin", "april_tag_42_centroid",
+        "april_tag_21_origin",
+        "april_tag_21_centroid",
+        "april_tag_42_origin",
+        "april_tag_42_centroid",
     }
 
 
@@ -165,15 +179,14 @@ async def test_get_transforms_includes_metadata_when_alpha_set():
     v.centroid_alpha = 0.3
     _populate_two_tags(v)
     result = await v.do_command({"command": "get_transforms"})
-    centroid_entries = [
-        e for e in result["transforms"] if "centroid" in e["label"]
-    ]
+    centroid_entries = [e for e in result["transforms"] if "centroid" in e["label"]]
     assert len(centroid_entries) == 2
     for entry in centroid_entries:
         assert entry["metadata"] == {"opacity": pytest.approx(0.3)}
 
 
 # ---------- default fall-through ----------
+
 
 @pytest.mark.asyncio
 async def test_no_command_returns_debug_snapshot():
