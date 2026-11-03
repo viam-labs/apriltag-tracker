@@ -4,7 +4,6 @@ import cv2
 import dt_apriltags as apriltag
 import numpy as np
 from typing_extensions import Self
-
 from viam.components.camera import Camera
 from viam.logging import getLogger
 from viam.media.video import CameraMimeType, NamedImage, ViamImage
@@ -164,7 +163,11 @@ class OverlayCamera(Camera, EasyResource):
         for tag in tags:
             corners = tag.corners.astype(int).reshape(-1, 1, 2)
             cv2.polylines(
-                bgr, [corners], isClosed=True, color=POLY_COLOR, thickness=POLY_THICKNESS
+                bgr,
+                [corners],
+                isClosed=True,
+                color=POLY_COLOR,
+                thickness=POLY_THICKNESS,
             )
             cx, cy = int(tag.center[0]), int(tag.center[1])
             cv2.putText(
